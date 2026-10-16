@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default desktop capability set",
+  "windows": ["main", "splashscreen", "dictation-overlay"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:event:default",
+    "dialog:default",
+    "clipboard-manager:default",
+    "global-shortcut:default"
+  ]
+}

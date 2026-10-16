@@ -1,0 +1,158 @@
+@import "./styles.css";
+/* :root, not html — the global :root canvas background would otherwise win
+   and paint the transparent window white around the card. */
+:root,
+body,
+#root {
+  height: 100%;
+  background: transparent;
+}
+/* ShutdownBoundary's wrapper sits between #root and the card. */
+#root > div:first-child {
+  height: 100%;
+}
+.splash-root {
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 30px;
+  background: var(--color-canvas);
+  border: 0;
+  border-radius: 26px;
+  box-shadow: var(--glass-rim), inset 0 0 0 0.5px var(--color-border);
+  color: var(--text-primary);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+html.native-vibrancy .splash-root {
+  background: var(--glass-bg);
+}
+.splash-root.is-finishing {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.splash-brand {
+  align-self: flex-start;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.splash-brand strong {
+  font: var(--weight-bold) 15px/20px var(--font-display);
+  letter-spacing: -0.02em;
+  color: var(--brand-ink);
+}
+.splash-symbol {
+  width: 84px;
+  height: 84px;
+  border-radius: 24px;
+  background: var(--gradient-brand-wash), var(--color-grouped);
+  border: 0;
+  box-shadow: var(--glass-rim), var(--glass-edge), 0 8px 24px -10px rgb(0 0 0 / 20%);
+  display: grid;
+  place-items: center;
+  margin: 16px 0 18px;
+  flex-shrink: 0;
+}
+.splash-logo {
+  width: 58px;
+  height: auto;
+  animation: splash-breathe 2.4s ease-in-out infinite;
+}
+.splash-symbol.is-ready {
+  color: var(--color-success);
+  background: var(--color-success-tint);
+}
+.splash-symbol.is-failed {
+  color: var(--color-error);
+  background: var(--color-error-tint);
+}
+.splash-symbol .app-icon {
+  width: 30px;
+  height: 30px;
+}
+@keyframes splash-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: saturate(1);
+  }
+  50% {
+    transform: scale(1.05);
+    filter: saturate(1.15);
+  }
+}
+.startup-copy {
+  text-align: center;
+}
+.startup-copy h1 {
+  font: var(--text-title);
+  letter-spacing: var(--tracking-display);
+}
+.startup-copy p {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.startup-progress {
+  width: 100%;
+  max-width: 280px;
+  margin-top: auto;
+  padding-top: 24px;
+  text-align: center;
+}
+.milestone-track {
+  display: flex;
+  gap: 5px;
+  height: 4px;
+}
+.milestone {
+  flex: 1;
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  transition: background 180ms;
+}
+.milestone.is-complete {
+  background: var(--gradient-brand);
+  background-size: 600% 100%;
+}
+.milestone:nth-child(1).is-complete { background-position: 0% 0; }
+.milestone:nth-child(2).is-complete { background-position: 20% 0; }
+.milestone:nth-child(3).is-complete { background-position: 40% 0; }
+.milestone:nth-child(4).is-complete { background-position: 60% 0; }
+.milestone:nth-child(5).is-complete { background-position: 80% 0; }
+.milestone:nth-child(6).is-complete { background-position: 100% 0; }
+.step-label {
+  display: block;
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 10px;
+}
+.slow-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+}
+.recovery-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.recovery-actions button {
+  min-height: 30px;
+  font-size: 11px;
+  padding: 6px 10px;
+}
+.startup-recovery {
+  width: 100%;
+  margin-top: 14px;
+  font-size: 11px;
+}
+.startup-recovery details p {
+  padding-top: 8px;
+  color: var(--accent-error);
+}

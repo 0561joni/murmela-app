@@ -1,0 +1,250 @@
+/*
+ * Murmela design tokens: the single source for color, type, spacing, radius and elevation.
+ * Every other stylesheet reads these variables; do not hard-code values elsewhere.
+ * Brand colours come from the Murmela mark (Logo/Murmela). Dark values apply when appearance.tsx sets data-theme="dark" on <html>.
+ */
+/*
+ * Direction ("native + Liquid Glass"): the app follows macOS 26. Neutrals,
+ * accents and status colours are Apple's system colours; navigation and
+ * controls float on Liquid Glass (a translucent, blurred material with a
+ * bright specular rim). The Murmela ribbon gradient appears only where
+ * something is alive: the record orb, live levels, progress.
+ */
+:root {
+  color-scheme: light;
+
+  /* Brand: sampled from the Murmela mark (cyan → blue → violet → magenta) */
+  --brand-cyan: #22c7ff;
+  --brand-blue: #3c5bff;
+  --brand-violet: #8b5cff;
+  --brand-magenta: #e25cff;
+  --brand-ink: #1d1d1f;
+  --gradient-brand: linear-gradient(115deg, var(--brand-cyan) 0%, var(--brand-blue) 42%, var(--brand-violet) 74%, var(--brand-magenta) 100%);
+  /* The record orb: the ribbon folded into a disc, cyan top-left to magenta bottom-right */
+  --gradient-orb: linear-gradient(140deg, #2bd0ff 0%, #3a7bff 34%, #4a4df5 58%, #8f5bff 82%, #e05cff 100%);
+  /* Vertical ribbon used by level meters: cyan at rest, magenta at the peak */
+  --gradient-brand-rise: linear-gradient(to top, var(--brand-cyan), var(--brand-blue) 55%, var(--brand-violet) 85%, var(--brand-magenta));
+  /* Primary actions: system blue with a faint top light, like a tinted glass button */
+  --gradient-primary: linear-gradient(180deg, #1a86ff 0%, #0071e3 100%);
+  --gradient-primary-hover: linear-gradient(180deg, #2b90ff 0%, #0077ed 100%);
+  /* Faint brand wash for highlight surfaces */
+  --gradient-brand-wash: linear-gradient(120deg, rgb(34 199 255 / 6%) 0%, rgb(60 91 255 / 4%) 45%, rgb(139 92 255 / 4%) 75%, rgb(226 92 255 / 6%) 100%);
+  /* A soft light falling from the top of hero surfaces */
+  --gradient-stage: radial-gradient(60% 80% at 50% 0%, rgb(60 120 255 / 8%), transparent 70%), radial-gradient(40% 60% at 85% 10%, rgb(226 92 255 / 5%), transparent 70%);
+
+  /* Neutrals: Apple system backgrounds and labels */
+  --color-window: #ffffff;
+  --color-canvas: #ffffff;
+  --color-sidebar: transparent;
+  --color-subtle: #f5f5f7;
+  --color-grouped: #f5f5f7;
+  --color-grouped-inset: #ffffff;
+  --color-field: #ffffff;
+  --color-hover: rgb(0 0 0 / 5%);
+  --color-pressed: rgb(0 0 0 / 9%);
+  --color-nav-active: rgb(0 0 0 / 7%);
+  --color-text: var(--brand-ink);
+  --color-text-2: #4a4a4f;
+  --color-text-muted: #6e6e73;
+  --color-divider: rgb(0 0 0 / 8%);
+  --color-border: rgb(0 0 0 / 11%);
+  --color-border-strong: rgb(0 0 0 / 18%);
+  --color-control: rgb(120 120 128 / 22%);
+  --color-switch-thumb: #ffffff;
+  --color-backdrop: rgb(0 0 0 / 18%);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14' fill='none' stroke='%236e6e73' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E");
+
+  /* Primary: system blue for actions, selection, focus */
+  --color-primary: #0071e3;
+  --color-primary-hover: #0077ed;
+  --color-primary-tint: rgb(0 122 255 / 10%);
+  --color-on-primary: #ffffff;
+
+  /* Accent: live audio only (meter, Listening, live text) */
+  --color-live: #0a7fb0;
+  --color-live-tint: rgb(50 173 230 / 12%);
+
+  /* Status: Apple's accessible system colours */
+  --color-success: #248a3d;
+  --color-success-tint: rgb(52 199 89 / 13%);
+  --color-warning: #b25000;
+  --color-warning-tint: rgb(255 149 0 / 13%);
+  --color-error: #d70015;
+  --color-error-hover: #b80012;
+  --color-error-tint: rgb(255 59 48 / 10%);
+  --color-on-error: #ffffff;
+
+  /* Liquid Glass. --glass-* paints the material; layer --glass-rim over any
+     shadow so the specular edge catches the light from above. */
+  --glass-bg: rgb(255 255 255 / 58%);
+  --glass-bg-strong: rgb(250 250 252 / 84%);
+  --glass-bg-control: rgb(255 255 255 / 78%);
+  --glass-bg-control-hover: rgb(255 255 255 / 95%);
+  --glass-tint-sidebar: rgb(246 246 248 / 66%);
+  --glass-filter: blur(28px) saturate(190%);
+  --glass-filter-strong: blur(40px) saturate(200%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / 90%), inset 0 0 0 0.5px rgb(255 255 255 / 60%), inset 0 -1px 1px rgb(255 255 255 / 30%);
+  --glass-edge: 0 0 0 0.5px rgb(0 0 0 / 10%);
+  --glass-specular: linear-gradient(150deg, rgb(255 255 255 / 95%) 0%, rgb(255 255 255 / 20%) 28%, rgb(255 255 255 / 0%) 50%, rgb(255 255 255 / 20%) 78%, rgb(255 255 255 / 70%) 100%);
+  --shadow-glass: var(--glass-rim), var(--glass-edge), 0 8px 28px -10px rgb(0 0 0 / 18%), 0 2px 6px -3px rgb(0 0 0 / 10%);
+  --shadow-glass-control: var(--glass-rim), 0 0 0 0.5px rgb(0 0 0 / 12%), 0 1px 2px rgb(0 0 0 / 8%), 0 2px 8px -4px rgb(0 0 0 / 10%);
+
+  /* Typography: San Francisco, as macOS sets it (offline app, no web fonts) */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+  --font-rounded: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-display: 700 30px/36px var(--font-display);
+  --text-title: 700 22px/28px var(--font-display);
+  --text-heading: 700 17px/22px var(--font-display);
+  --text-section: 600 13px/18px var(--font-sans);
+  --text-reading: 400 15px/24px var(--font-sans);
+  --text-body: 400 13px/18px var(--font-sans);
+  --text-small: 400 11px/14px var(--font-sans);
+  --text-label: 600 11px/14px var(--font-sans);
+  --tracking-display: -0.02em;
+  --tracking-label: 0.01em;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* Spacing: 4 px base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Sizes */
+  --control-height: 28px;
+  --control-height-lg: 34px;
+  --toolbar-height: 60px;
+  --sidebar-width: 224px;
+  --sidebar-width-collapsed: 84px;
+  /* Room for the traffic lights in the transparent title bar. */
+  --titlebar-inset: 30px;
+  --panel-inset: 8px;
+  --reading-width: 720px;
+  --content-width: 1080px;
+  --orb-size: 104px;
+
+  /* Shape: concentric, continuous corners; controls are capsules */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 22px;
+  --radius-panel: 18px;
+  --radius-full: 999px;
+
+  /* Elevation: soft, neutral */
+  --shadow-hairline: 0 0 0 0.5px rgb(0 0 0 / 10%), 0 1px 1px rgb(0 0 0 / 4%);
+  --shadow-card: 0 0 0 0.5px rgb(0 0 0 / 5%);
+  --shadow-panel-inset: none;
+  --shadow-pop: var(--glass-rim), 0 0 0 0.5px rgb(0 0 0 / 12%), 0 18px 50px -12px rgb(0 0 0 / 28%), 0 4px 12px -4px rgb(0 0 0 / 10%);
+  --shadow-primary: inset 0 1px 0 rgb(255 255 255 / 28%), inset 0 0 0 0.5px rgb(0 0 0 / 6%), 0 1px 2px rgb(0 60 160 / 20%), 0 4px 12px -4px rgb(0 113 227 / 45%);
+  --shadow-orb: 0 18px 40px -14px rgb(60 76 240 / 60%), 0 4px 10px -4px rgb(60 76 240 / 35%), inset 0 1px 1px rgb(255 255 255 / 45%), inset 0 -10px 24px rgb(40 20 140 / 18%);
+  --focus-ring: 0 0 0 3.5px color-mix(in srgb, var(--color-primary) 45%, transparent);
+  --duration: 160ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --brand-ink: #f5f5f7;
+  --gradient-primary: linear-gradient(180deg, #2a93ff 0%, #0a84ff 100%);
+  --gradient-primary-hover: linear-gradient(180deg, #3d9dff 0%, #1f8fff 100%);
+  --gradient-brand-wash: linear-gradient(120deg, rgb(34 199 255 / 8%) 0%, rgb(60 91 255 / 7%) 45%, rgb(139 92 255 / 7%) 75%, rgb(226 92 255 / 8%) 100%);
+  --gradient-stage: radial-gradient(60% 80% at 50% 0%, rgb(60 120 255 / 14%), transparent 70%), radial-gradient(40% 60% at 85% 10%, rgb(226 92 255 / 8%), transparent 70%);
+  --color-window: #1e1e20;
+  --color-canvas: #1e1e20;
+  --color-subtle: #2a2a2d;
+  --color-grouped: #2a2a2d;
+  --color-grouped-inset: rgb(255 255 255 / 6%);
+  --color-field: rgb(255 255 255 / 6%);
+  --color-hover: rgb(255 255 255 / 7%);
+  --color-pressed: rgb(255 255 255 / 12%);
+  --color-nav-active: rgb(255 255 255 / 11%);
+  --color-text: var(--brand-ink);
+  --color-text-2: #c7c7cc;
+  --color-text-muted: #98989d;
+  --color-divider: rgb(255 255 255 / 9%);
+  --color-border: rgb(255 255 255 / 12%);
+  --color-border-strong: rgb(255 255 255 / 20%);
+  --color-control: rgb(120 120 128 / 36%);
+  --color-backdrop: rgb(0 0 0 / 45%);
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14' fill='none' stroke='%2398989d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 5l3-3 3 3M2 9l3 3 3-3'/%3E%3C/svg%3E");
+  --color-primary: #0a84ff;
+  --color-primary-hover: #409cff;
+  --color-primary-tint: rgb(10 132 255 / 20%);
+  --color-on-primary: #ffffff;
+  --color-live: #64d2ff;
+  --color-live-tint: rgb(100 210 255 / 14%);
+  --color-success: #30d158;
+  --color-success-tint: rgb(48 209 88 / 16%);
+  --color-warning: #ffb340;
+  --color-warning-tint: rgb(255 159 10 / 16%);
+  --color-error: #ff6961;
+  --color-error-hover: #ff8a84;
+  --color-error-tint: rgb(255 69 58 / 16%);
+  --color-on-error: #ffffff;
+  --glass-bg: rgb(40 40 44 / 55%);
+  --glass-bg-strong: rgb(38 38 42 / 84%);
+  --glass-bg-control: rgb(255 255 255 / 10%);
+  --glass-bg-control-hover: rgb(255 255 255 / 16%);
+  --glass-tint-sidebar: rgb(44 44 48 / 62%);
+  --glass-rim: inset 0 1px 0 rgb(255 255 255 / 18%), inset 0 0 0 0.5px rgb(255 255 255 / 10%), inset 0 -1px 1px rgb(255 255 255 / 5%);
+  --glass-edge: 0 0 0 0.5px rgb(0 0 0 / 60%);
+  --glass-specular: linear-gradient(150deg, rgb(255 255 255 / 38%) 0%, rgb(255 255 255 / 6%) 28%, rgb(255 255 255 / 0%) 50%, rgb(255 255 255 / 6%) 78%, rgb(255 255 255 / 24%) 100%);
+  --shadow-glass: var(--glass-rim), var(--glass-edge), 0 10px 32px -10px rgb(0 0 0 / 60%), 0 2px 6px -3px rgb(0 0 0 / 40%);
+  --shadow-glass-control: var(--glass-rim), 0 0 0 0.5px rgb(0 0 0 / 40%), 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-hairline: 0 0 0 0.5px rgb(255 255 255 / 10%);
+  --shadow-card: 0 0 0 0.5px rgb(255 255 255 / 6%);
+  --shadow-pop: var(--glass-rim), 0 0 0 0.5px rgb(0 0 0 / 60%), 0 20px 56px -12px rgb(0 0 0 / 70%);
+  --shadow-primary: inset 0 1px 0 rgb(255 255 255 / 25%), 0 1px 2px rgb(0 0 0 / 30%), 0 4px 14px -4px rgb(10 132 255 / 45%);
+  --shadow-orb: 0 18px 48px -12px rgb(90 100 255 / 55%), 0 0 0 1px rgb(255 255 255 / 8%), inset 0 1px 1px rgb(255 255 255 / 40%), inset 0 -10px 24px rgb(20 10 90 / 30%);
+}
+
+/* Reduce transparency: glass turns into solid, still-rounded surfaces. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-bg: #f5f5f7;
+    --glass-bg-strong: #fbfbfd;
+    --glass-tint-sidebar: #f0f0f2;
+    --glass-filter: none;
+    --glass-filter-strong: none;
+  }
+  :root[data-theme="dark"] {
+    --glass-bg: #2c2c2e;
+    --glass-bg-strong: #2c2c2e;
+    --glass-tint-sidebar: #252527;
+  }
+}
+
+/*
+ * Legacy names still used by screens that have not been migrated yet.
+ * They point at the tokens above; remove each alias once nothing reads it.
+ */
+:root,
+:root[data-theme="dark"] {
+  --canvas: var(--color-canvas);
+  --surface: var(--color-canvas);
+  --surface-raised: var(--color-canvas);
+  --surface-subtle: var(--color-subtle);
+  --text-primary: var(--color-text);
+  --text-secondary: var(--color-text-2);
+  --text-muted: var(--color-text-muted);
+  --border: var(--color-divider);
+  --accent: var(--color-primary);
+  --accent-tint: var(--color-primary-tint);
+  --accent-success: var(--color-success);
+  --success-tint: var(--color-success-tint);
+  --accent-warn: var(--color-warning);
+  --accent-error: var(--color-error);
+  --error-tint: var(--color-error-tint);
+  --shadow-panel: var(--shadow-pop);
+  --radius-md: var(--radius-lg);
+}

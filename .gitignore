@@ -1,0 +1,26 @@
+node_modules
+dist
+.DS_Store
+.claude/
+.codex/
+target
+src-tauri/target
+src-tauri/gen
+*.log
+workers/**/__pycache__/
+workers/**/build/
+workers/**/dist/
+
+src-tauri/bundle/translation/*
+!src-tauri/bundle/translation/.gitkeep
+
+src-tauri/bundle/vibevoice/*
+!src-tauri/bundle/vibevoice/.gitkeep
+src-tauri/bundle/moss/*
+!src-tauri/bundle/moss/.gitkeep
+
+src-tauri/bundle/fluid/*
+!src-tauri/bundle/fluid/.gitkeep
+
+# Private / local-only data (never publish)
+_private/

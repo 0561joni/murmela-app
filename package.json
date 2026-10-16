@@ -1,0 +1,47 @@
+{
+  "name": "murmela",
+  "private": true,
+  "version": "1.1.0",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "preinstall": "node scripts/check-node.mjs",
+    "predev": "node scripts/check-node.mjs",
+    "prebuild": "node scripts/check-node.mjs",
+    "pretauri": "node scripts/check-node.mjs",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "preview": "vite preview",
+    "tauri": "node scripts/run-tauri.mjs",
+    "deploy:mac": "node scripts/deploy-macos.mjs",
+    "release:mac": "node scripts/release-macos.mjs",
+    "build:translation": "node scripts/build-translation-worker.mjs",
+    "build:vibevoice": "node scripts/build-vibevoice-worker.mjs",
+    "build:moss": "node scripts/build-moss-worker.mjs",
+    "licenses": "node scripts/generate-third-party-licenses.mjs",
+    "build:fluid": "node scripts/build-fluid-worker.mjs"
+  },
+  "overrides": {
+    "picomatch": "4.0.4"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.1",
+    "vitest": "^4.1.10"
+  }
+}

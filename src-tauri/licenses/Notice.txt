@@ -1,0 +1,8 @@
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms.
+
+Murmela downloads TranslateGemma 12B separately. Its use is governed by the
+bundled Gemma Terms of Use, including the Gemma Prohibited Use Policy.
+Original weights: Google, google/translategemma-12b-it.
+Q6_K GGUF conversion: mradermacher/translategemma-12b-it-GGUF.
+Murmela does not modify the downloaded GGUF file. Quantization is an upstream
+modification by mradermacher. The local text prompt is a Murmela adaptation.

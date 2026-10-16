@@ -1,0 +1,12 @@
+pub const DIRECT_FILE_MAX_MS: i64 = 60_000;
+pub const TARGET_CHUNK_MS: i64 = 25_000;
+pub const MIN_CHUNK_MS: i64 = 18_000;
+pub const MAX_CHUNK_MS: i64 = 29_000;
+pub const CHUNK_OVERLAP_MS: i64 = 800;
+pub const SPLIT_ANALYSIS_FRAME_MS: i64 = 80;
+pub const SPLIT_ANALYSIS_STEP_MS: i64 = 40;
+
+pub const MIN_SPLIT_RETRY_MS: i64 = 8_000;
+
+pub const CONTROLLED_PROMPT_MAX_CHARS: usize = 240;
+pub const CONTROLLED_PROMPT_RESET_SILENCE_MS: i64 = 2_000;

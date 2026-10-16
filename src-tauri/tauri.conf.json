@@ -1,0 +1,100 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Murmela",
+  "version": "1.1.0",
+  "identifier": "com.murmela.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "node scripts/prepare-tauri-build.mjs && npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Murmela",
+        "width": 1320,
+        "height": 900,
+        "minWidth": 720,
+        "minHeight": 480,
+        "resizable": true,
+        "visible": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 22 },
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["sidebar"],
+          "state": "followsWindowActiveState"
+        }
+      },
+      {
+        "label": "splashscreen",
+        "title": "Murmela is starting",
+        "url": "splashscreen.html",
+        "width": 480,
+        "height": 360,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "fullscreen": false,
+        "shadow": true,
+        "skipTaskbar": true,
+        "focus": true,
+        "windowEffects": {
+          "effects": ["popover"],
+          "state": "active",
+          "radius": 26
+        }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "licenses/*": "licenses/",
+      "bundle/translation/": "workers/",
+      "bundle/vibevoice/": "workers/vibevoice/",
+      "bundle/moss/": "workers/moss/",
+      "bundle/fluid/": "workers/fluid/",
+      "../browser-helper/manifest.json": "browser-helper/manifest.json",
+      "../browser-helper/detect.js": "browser-helper/detect.js",
+      "../browser-helper/content.js": "browser-helper/content.js",
+      "../browser-helper/background.js": "browser-helper/background.js",
+      "../browser-helper/popup.html": "browser-helper/popup.html",
+      "../browser-helper/popup.js": "browser-helper/popup.js",
+      "../browser-helper/README.md": "browser-helper/README.md",
+      "../browser-helper/icons/*": "browser-helper/icons/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist"
+    },
+    "targets": ["app"],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["murmela"]
+      }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENEQjZCNkI0MTIwREIyRUQKUldUdHNnMFN0TGEyemQxWFljaDFXQU8yM1pFazBHV2QrYzlxOWU2dU1KTEtyb2RmTDlWenhpL2IK",
+      "endpoints": [
+        "https://github.com/0561joni/murmela-releases/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

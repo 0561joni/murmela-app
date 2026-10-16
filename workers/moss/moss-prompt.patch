@@ -1,0 +1,114 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 78bcd97..8a1f365 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -16,8 +16,10 @@ foreach(be CUDA METAL VULKAN HIP)
+     set(GGML_${be} ON CACHE BOOL "" FORCE)
+   endif()
+ endforeach()
+-set(GGML_NATIVE ON CACHE BOOL "" FORCE)
++set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+ set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
++set(GGML_METAL OFF CACHE BOOL "" FORCE)
++set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+ 
+ # For the shared build, ggml MUST be compiled as a static PIC library so it
+ # links INTO libmoss-transcribe.so -- a LocalAI backend dlopen's the .so and
+diff --git a/src/cli.cpp b/src/cli.cpp
+index af8e028..456fba1 100644
+--- a/src/cli.cpp
++++ b/src/cli.cpp
+@@ -34,18 +34,21 @@ static int cmd_transcribe(int argc, char** argv) {
+     if (argc < 4) {
+         std::fprintf(stderr,
+             "usage: moss-transcribe transcribe <model.gguf> <audio.wav> "
+-            "[--max-new N] [--format text|srt|ass|json]\n");
++            "[--max-new N] [--format text|srt|ass|json] [--prompt TEXT]\n");
+         return 2;
+     }
+     const char* gguf = argv[2];
+     const char* wav  = argv[3];
+     int max_new = -1;  // resolved from config below if not overridden
+     std::string format = "text";
++    std::string prompt;
+     for (int i = 4; i < argc; ++i) {
+         if (std::strcmp(argv[i], "--max-new") == 0 && i + 1 < argc) {
+             max_new = std::atoi(argv[++i]);
+         } else if (std::strcmp(argv[i], "--format") == 0 && i + 1 < argc) {
+             format = argv[++i];
++        } else if (std::strcmp(argv[i], "--prompt") == 0 && i + 1 < argc) {
++            prompt = argv[++i];
+         }
+     }
+     if (format != "text" && format != "srt" && format != "ass" && format != "json") {
+@@ -60,7 +63,7 @@ static int cmd_transcribe(int argc, char** argv) {
+         max_new = m.config().default_max_new_tokens > 0
+                       ? m.config().default_max_new_tokens : 5120;
+     }
+-    std::string text = mt::transcribe_wav(m, wav, max_new);
++    std::string text = mt::transcribe_wav(m, wav, max_new, prompt);
+     if (text.empty()) { std::fprintf(stderr, "transcription failed\n"); return 1; }
+ 
+     if (format == "text") {
+diff --git a/src/transcribe.cpp b/src/transcribe.cpp
+index e33d430..58cdf92 100644
+--- a/src/transcribe.cpp
++++ b/src/transcribe.cpp
+@@ -21,7 +21,7 @@ static std::string strip(const std::string& s) {
+ }
+ 
+ std::string transcribe_pcm16k(ModelLoader& m, const std::vector<float>& samples,
+-                              int max_new) {
++                              int max_new, const std::string& prompt) {
+     const Config& c = m.config();
+     const int hidden = c.text_hidden;
+ 
+@@ -38,7 +38,7 @@ std::string transcribe_pcm16k(ModelLoader& m, const std::vector<float>& samples,
+     Tokenizer tok;
+     if (!tok.load(m)) { MT_LOGE("transcribe_pcm16k: tokenizer load failed"); return {}; }
+     std::vector<int32_t> input_ids =
+-        build_input_ids(tok, c, c.default_prompt, n_tokens);
++        build_input_ids(tok, c, prompt.empty() ? c.default_prompt : c.default_prompt + "\n" + prompt, n_tokens);
+     if (input_ids.empty()) { MT_LOGE("transcribe_pcm16k: build_input_ids empty"); return {}; }
+ 
+     // 4. Fuse: embed lookup + masked_scatter audio injection.
+@@ -59,14 +59,15 @@ std::string transcribe_pcm16k(ModelLoader& m, const std::vector<float>& samples,
+     return strip(text);
+ }
+ 
+-std::string transcribe_wav(ModelLoader& m, const std::string& wav_path, int max_new) {
++std::string transcribe_wav(ModelLoader& m, const std::string& wav_path, int max_new,
++                           const std::string& prompt) {
+     // 1. Load + resample audio to 16 kHz mono, then run the shared PCM core.
+     Audio a;
+     if (!load_audio_16k_mono(wav_path, a)) {
+         MT_LOGE("transcribe_wav: failed to load %s", wav_path.c_str());
+         return {};
+     }
+-    return transcribe_pcm16k(m, a.samples, max_new);
++    return transcribe_pcm16k(m, a.samples, max_new, prompt);
+ }
+ 
+ }  // namespace mt
+diff --git a/src/transcribe.hpp b/src/transcribe.hpp
+index 02a68b0..dfaae63 100644
+--- a/src/transcribe.hpp
++++ b/src/transcribe.hpp
+@@ -16,14 +16,15 @@ namespace mt {
+ // Transcribe a wav file. Loads and resamples the audio to 16 kHz mono, runs the
+ // full pipeline, and returns the decoded transcript text (trailing EOS dropped,
+ // whitespace stripped). Returns an empty string on error.
+-std::string transcribe_wav(ModelLoader& m, const std::string& wav_path, int max_new);
++std::string transcribe_wav(ModelLoader& m, const std::string& wav_path, int max_new,
++                           const std::string& prompt = "");
+ 
+ // Transcribe already-decoded 16 kHz mono float PCM. Runs the audio front end,
+ // prompt/fusion, greedy generation and detokenization -- the shared core behind
+ // both transcribe_wav and the C-API PCM entry point. `samples` MUST already be
+ // 16 kHz mono. Returns an empty string on error.
+ std::string transcribe_pcm16k(ModelLoader& m, const std::vector<float>& samples,
+-                              int max_new);
++                              int max_new, const std::string& prompt = "");
+ 
+ }  // namespace mt
+ 

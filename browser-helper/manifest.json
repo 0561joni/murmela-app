@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Murmela speaker names",
+  "version": "1.0.0",
+  "description": "Tells Murmela on your Mac who is speaking in Google Meet, Microsoft Teams and Zoom, so your call transcripts show the right names.",
+  "icons": { "32": "icons/icon-32.png", "128": "icons/icon-128.png" },
+  "action": { "default_popup": "popup.html", "default_icon": { "32": "icons/icon-32.png" } },
+  "background": { "service_worker": "background.js" },
+  "host_permissions": ["http://127.0.0.1/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://teams.live.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://*.zoom.us/*"
+      ],
+      "js": ["detect.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
