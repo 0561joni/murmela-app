@@ -17,6 +17,7 @@ import { useLicense } from "../hooks/useLicense";
 import { GemmaTermsDialog } from "../components/GemmaTermsDialog";
 import { GlobeKeyNotice } from "../components/GlobeKeyNotice";
 import { IconButton } from "../components/IconButton";
+import { OUTPUT_MODES } from "../lib/translationApi";
 import {
   ModelInfoButton,
   ModelPicker,
@@ -56,6 +57,7 @@ import type {
   InstalledModel,
   LivePairStatus,
   ModelDownloadStatus,
+  OutputMode,
   SettingsPatch,
 } from "../types/domain";
 
@@ -76,6 +78,8 @@ interface SettingsScreenProps {
   installedModels: InstalledModel[];
   onSave: (patch: SettingsPatch) => Promise<void>;
   onReloadModelState: () => Promise<void>;
+  /** Opens the welcome setup again (engine, languages, practice). */
+  onRunWelcomeSetup?: () => void;
 }
 
 const DEFAULT_SHORTCUT = "CmdOrCtrl+Shift+Space";
@@ -103,6 +107,7 @@ export function SettingsScreen({
   installedModels,
   onSave,
   onReloadModelState,
+  onRunWelcomeSetup,
 }: SettingsScreenProps) {
   const [group, setGroup] = useState(initialSection);
   // The app can switch sections from outside, e.g. a Pro hint opening License.
@@ -411,6 +416,8 @@ export function SettingsScreen({
   const translationModels = downloadableModels.filter((model) => model.capability === "translation");
   const installedTranslationModels = translationModels.filter((model) => model.installed);
   const translationAvailable = translationModels.some((model) => model.availability === "available");
+  const cycleLanguages = settings.translationCycleLanguages ?? ["en", "de", "fr", "es-AR"];
+  const cycleStops = OUTPUT_MODES.filter((mode) => mode.value === "original" || cycleLanguages.includes(mode.value as Exclude<OutputMode, "original">));
   const livePairInstalled = installedModels.some((model) => model.id === LIVE_PAIR_ID);
   const livePairSelected = settings.shortcutDictationSelectedModelId === LIVE_PAIR_ID;
   const dictationEngine = installedModels.find(
@@ -783,6 +790,7 @@ export function SettingsScreen({
           [
             ["general", "General"],
             ["audio", "Dictation"],
+            ["languages", "Languages"],
             ["models", "Engines"],
             ["appearance", "Appearance & feedback"],
             ["advanced", "Advanced"],
@@ -906,6 +914,21 @@ export function SettingsScreen({
               {fieldFeedback("saveHistory")}
             </div>
           </article>
+          {onRunWelcomeSetup ? (
+            <article className="settings-card settings-card-wide" aria-label="Welcome setup">
+              <div className="setting-row">
+                <div className="setting-copy">
+                  <p className="setting-title">Welcome setup</p>
+                  <p className="muted">Choose an engine and your translation languages again, and practise the dictation key.</p>
+                </div>
+                <div className="setting-control">
+                  <Button variant="secondary" onClick={onRunWelcomeSetup}>
+                    Run welcome setup
+                  </Button>
+                </div>
+              </div>
+            </article>
+          ) : null}
           {group === "general" ? <NetworkActivityCard /> : null}
         </div>
       </section>
@@ -1028,7 +1051,7 @@ export function SettingsScreen({
                   <ul className="shortcut-gestures">
                     <li>Hold <kbd>{displayedShortcut}</kbd> to talk, let go to paste.</li>
                     <li>Double-tap it to talk hands-free, tap once more to finish.</li>
-                    <li><kbd>Esc</kbd> cancels.{settings.translationEnabled ? <> Hold it and press <kbd>→</kbd> or <kbd>←</kbd> to switch language.</> : null}</li>
+                    <li><kbd>Esc</kbd> cancels.{settings.translationEnabled ? <> Hold it and press <kbd>→</kbd> or <kbd>←</kbd> to switch language, and keep holding to dictate in it.</> : null}</li>
                   </ul>
                   {settings.shortcut === FN_KEY_SHORTCUT ? <GlobeKeyNotice /> : null}
                 </>
@@ -1104,25 +1127,6 @@ export function SettingsScreen({
             {fieldFeedback("shortcutMode")}
           </article>
           )}
-          <article className="settings-card">
-            <label className="field-stack">
-              <span>Language you speak</span>
-              <select
-                value={settings.languageMode === "fixed" && settings.fixedLanguage ? settings.fixedLanguage : "auto"}
-                disabled={isSaving}
-                onChange={(event) => void handleLanguageChange(event.target.value)}
-              >
-                <option value="auto">Automatic (recommended)</option>
-                {SPOKEN_LANGUAGES.map(([code, name]) => (
-                  <option key={code} value={code}>{name}</option>
-                ))}
-              </select>
-            </label>
-            <p className="muted">
-              Automatic also follows you when you switch languages mid-sentence. Pick one if short dictations come out in the wrong language. MOSS and VibeVoice always detect the language themselves.
-            </p>
-            {fieldFeedback("languageMode")}
-          </article>
           <article className="settings-card settings-card-wide">
             <div className="setting-row">
               <div className="setting-copy">
@@ -1230,6 +1234,39 @@ export function SettingsScreen({
             </div>
             {fieldFeedback("pasteLastShortcut")}
           </article>
+        </div>
+      </section>
+      <section
+        className="settings-section"
+        hidden={group !== "languages"}
+        aria-label="Languages"
+      >
+        <div className="settings-section-heading">
+          <h2>Languages</h2>
+          <p className="muted">
+            The language you speak, and the languages Murmela can paste your words in.
+          </p>
+        </div>
+        <div className="settings-grid">
+          <article className="settings-card">
+            <label className="field-stack">
+              <span>Language you speak</span>
+              <select
+                value={settings.languageMode === "fixed" && settings.fixedLanguage ? settings.fixedLanguage : "auto"}
+                disabled={isSaving}
+                onChange={(event) => void handleLanguageChange(event.target.value)}
+              >
+                <option value="auto">Automatic (recommended)</option>
+                {SPOKEN_LANGUAGES.map(([code, name]) => (
+                  <option key={code} value={code}>{name}</option>
+                ))}
+              </select>
+            </label>
+            <p className="muted">
+              Automatic also follows you when you switch languages mid-sentence. Pick one if short dictations come out in the wrong language. MOSS and VibeVoice always detect the language themselves.
+            </p>
+            {fieldFeedback("languageMode")}
+          </article>
           {termsModelId ? (
             <GemmaTermsDialog
               onCancel={() => setTermsModelId(null)}
@@ -1243,7 +1280,7 @@ export function SettingsScreen({
           ) : null}
           <article className="glass-subtle settings-card settings-card-wide" aria-label="Translation">
             <h3>Translation <span className="muted">· Preview</span></h3>
-            <p>Translate texts on the Translate screen, and dictate in German or English while Murmela pastes French or Argentinian Spanish.</p>
+            <p>Translate texts on the Translate screen, and dictate while Murmela pastes your words in any of nine languages.</p>
             <p className="muted">Needs an Apple Silicon Mac. Everything stays on this computer.</p>
             <ul className="translation-model-list" aria-label="Translation engines">
               {translationModels.map((model) => {
@@ -1316,12 +1353,38 @@ export function SettingsScreen({
                   />
                 ) : null}
               </div>
-              <p className="muted">Switches Original → Français → Español (AR) between dictations. While translation is on, this key combination belongs to Murmela in every app.</p>
-              {oneKey ? (
-                <p className="muted">Or hold <kbd>{displayedShortcut}</kbd> and press <kbd>→</kbd> or <kbd>←</kbd> in any app.</p>
-              ) : null}
+              {settings.translationEnabled ? <>
+                <p className="muted">Switches {cycleStops.map((mode) => mode.label).join(" → ")} between dictations. While translation is on, this key combination belongs to Murmela in every app.</p>
+                {oneKey ? (
+                  <p className="muted">Or hold <kbd>{displayedShortcut}</kbd> and press <kbd>→</kbd> or <kbd>←</kbd> in any app. Keep holding to dictate straight away in the new language.</p>
+                ) : null}
+              </> : (
+                <p className="warning-text">Off. Turn on Translate while you dictate above to switch languages with this shortcut{oneKey ? <> or with <kbd>{displayedShortcut}</kbd> + <kbd>→</kbd></> : null}.</p>
+              )}
             </div>
             {fieldFeedback("translationCycleShortcut")}
+            <fieldset className="cycle-languages">
+              <legend>Translate into</legend>
+              <div className="cycle-language-options">
+                {OUTPUT_MODES.filter((mode) => mode.value !== "original").map((mode) => {
+                  const code = mode.value as Exclude<OutputMode, "original">;
+                  const checked = cycleLanguages.includes(code);
+                  return (
+                    <label key={code} className="cycle-language">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={isSaving || (checked && cycleLanguages.length === 1)}
+                        onChange={() => void handleChange("translationCycleLanguages", checked ? cycleLanguages.filter((item) => item !== code) : [...cycleLanguages, code])}
+                      />
+                      <span>{mode.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="muted">🌐 + → and the language shortcut switch between Original and these. The Dictate screen offers every language.</p>
+            </fieldset>
+            {fieldFeedback("translationCycleLanguages")}
             <p className="muted">Uses Google&apos;s TranslateGemma (converted by mradermacher), subject to the <a href="https://ai.google.dev/gemma/terms" target="_blank" rel="noreferrer">Gemma terms</a> and <a href="https://ai.google.dev/gemma/prohibited_use_policy" target="_blank" rel="noreferrer">use restrictions</a>. Model information: <a href="https://huggingface.co/google/translategemma-12b-it" target="_blank" rel="noreferrer">12B</a>, <a href="https://huggingface.co/google/translategemma-4b-it" target="_blank" rel="noreferrer">4B</a></p>
           </article>
         </div>
@@ -1914,7 +1977,7 @@ export function SettingsScreen({
           </article>
           {livePairInstalled ? (
             <article className="glass-subtle settings-card settings-card-wide" aria-label="Live dictation tuning">
-              <h3>Live dictation tuning <span className="muted">· Experimental</span></h3>
+              <h3>Live dictation tuning</h3>
               {livePairInstalled ? <>
                 <p className="muted" role="status">
                   Live dictation: {LIVE_PAIR_STATE_LABELS[livePairStatus?.state ?? "off"]}
@@ -2010,7 +2073,7 @@ export function SettingsScreen({
       >
         <div className="settings-section-heading">
           <h2>License</h2>
-          <p className="muted">Murmela Pro on this Mac.</p>
+          <p className="muted">Pro or Lifetime on this Mac.</p>
         </div>
         {group === "license" ? <LicenseCard /> : null}
       </section>

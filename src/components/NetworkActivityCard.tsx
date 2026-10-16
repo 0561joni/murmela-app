@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { clearNetworkActivity, getNetworkActivity } from "../lib/api";
+import { clearNetworkActivity, exportNetworkActivity, getNetworkActivity } from "../lib/api";
 import { describeError, formatBytes, formatDateTime } from "../lib/formatting";
 import type { NetworkActivity, NetworkActivityEntry } from "../types/domain";
 import { ActionButton } from "./Feedback";
@@ -10,10 +10,38 @@ const OUTCOME_LABEL: Record<NetworkActivityEntry["outcome"], string | null> = {
   canceled: "Canceled",
 };
 
+/** The log as plain text: the allowed destinations, then every connection, newest first. */
+export function networkActivityText(activity: NetworkActivity, exportedAt: Date = new Date()) {
+  const names = new Map(activity.destinations.map((destination) => [destination.id, destination.name]));
+  const lines = [
+    "Murmela network activity",
+    `Exported ${formatDateTime(exportedAt.toISOString())}`,
+    "",
+    "Places Murmela can contact (it refuses any other address):",
+    ...activity.destinations.map((destination) => `- ${destination.name} (${destination.host}): ${destination.reason}`),
+    "",
+    `Connections made (${activity.entries.length}):`,
+  ];
+  if (activity.entries.length === 0) lines.push("None since the log started or was last cleared.");
+  for (const entry of activity.entries) {
+    const outcome = OUTCOME_LABEL[entry.outcome];
+    lines.push(
+      [
+        formatDateTime(entry.startedAt),
+        `${names.get(entry.destination) ?? entry.host} (${entry.host})`,
+        entry.purpose + (outcome ? ` [${outcome}]` : ""),
+        entry.bytes === null ? "size not reported" : formatBytes(entry.bytes),
+      ].join(" · "),
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
 /** Settings → General: the only places Murmela can contact, and every connection it actually made. */
 export function NetworkActivityCard() {
   const [activity, setActivity] = useState<NetworkActivity | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -24,6 +52,12 @@ export function NetworkActivityCard() {
       current = false;
     };
   }, []);
+
+  async function exportLog() {
+    if (!activity) return;
+    const day = new Date().toISOString().slice(0, 10);
+    setSavedTo(await exportNetworkActivity(`Murmela network activity ${day}.txt`, networkActivityText(activity)));
+  }
 
   async function clear() {
     await clearNetworkActivity();
@@ -98,8 +132,12 @@ export function NetworkActivityCard() {
       <div className="setting-row">
         <div className="setting-copy">
           <p className="muted">No analytics, no crash reporting, no telemetry. Recordings and text never leave this computer.</p>
+          {savedTo ? <p className="muted" role="status">Saved to {savedTo}</p> : null}
         </div>
-        <div className="setting-control">
+        <div className="setting-control network-log-actions">
+          <ActionButton action={exportLog} success="" disabled={activity === null}>
+            Export…
+          </ActionButton>
           <ActionButton action={clear} success="Cleared" disabled={entries.length === 0}>
             Clear log
           </ActionButton>

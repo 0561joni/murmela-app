@@ -2,10 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { DictationOutput, DictationOutputState, OutputMode, QuickDictationStatusResponse } from "../types/domain";
 
+/** Original, then every output language in the order the language shortcut visits them. */
 export const OUTPUT_MODES: { value: OutputMode; label: string }[] = [
   { value: "original", label: "Original" },
+  { value: "en", label: "English" },
+  { value: "de", label: "Deutsch" },
   { value: "fr", label: "Français" },
+  { value: "es", label: "Español" },
   { value: "es-AR", label: "Español (AR)" },
+  { value: "it", label: "Italiano" },
+  { value: "pt-BR", label: "Português (BR)" },
+  { value: "nl", label: "Nederlands" },
+  { value: "pl", label: "Polski" },
 ];
 export function outputLanguageLabel(mode: OutputMode) {
   return OUTPUT_MODES.find((item) => item.value === mode)?.label ?? "Original";

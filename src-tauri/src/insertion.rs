@@ -322,8 +322,18 @@ fn simulate_paste() -> Result<()> {
     Ok(())
 }
 
+/// The app to bring back before pasting. None when Murmela itself is in front
+/// (for example its welcome practice box): ⌘V then goes to its own window, and
+/// a development build has no bundle identifier to reactivate.
 pub fn detect_frontmost_paste_target() -> Option<PasteTarget> {
-    let script = r#"tell application "System Events" to get bundle identifier of first application process whose frontmost is true"#;
+    let script = r#"tell application "System Events"
+    set frontApp to first application process whose frontmost is true
+    set bundleId to ""
+    try
+        set bundleId to bundle identifier of frontApp
+    end try
+    return (unix id of frontApp as text) & " " & bundleId
+end tell"#;
     let output = Command::new("osascript")
         .arg("-e")
         .arg(script)
@@ -332,13 +342,30 @@ pub fn detect_frontmost_paste_target() -> Option<PasteTarget> {
     if !output.status.success() {
         return None;
     }
-    let bundle_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!bundle_id.is_empty()).then_some(PasteTarget(bundle_id))
+    paste_target_from(&String::from_utf8_lossy(&output.stdout), std::process::id())
+}
+
+/// Parses "<pid> <bundle id>" from the frontmost-app script.
+fn paste_target_from(output: &str, own_pid: u32) -> Option<PasteTarget> {
+    let (pid, bundle_id) = output.trim().split_once(' ').unwrap_or((output.trim(), ""));
+    if pid.parse::<u32>().ok() == Some(own_pid) {
+        return None;
+    }
+    let bundle_id = bundle_id.trim();
+    (!bundle_id.is_empty() && bundle_id != "missing value").then(|| PasteTarget(bundle_id.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn murmela_in_front_needs_no_app_to_reactivate() {
+        assert_eq!(paste_target_from("42 com.apple.TextEdit\n", 7).map(|t| t.0), Some("com.apple.TextEdit".into()));
+        assert!(paste_target_from("7 com.murmela.app", 7).is_none(), "Murmela itself");
+        assert!(paste_target_from("42 missing value", 7).is_none());
+        assert!(paste_target_from("42 ", 7).is_none());
+    }
 
     #[test]
     fn missing_accessibility_keeps_a_copy_and_explains_why_paste_was_skipped() {

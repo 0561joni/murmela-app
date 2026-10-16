@@ -36,6 +36,9 @@ const outDir = join(bundleDir, "release");
 const archiveName = `${productName}_${version}_aarch64.app.tar.gz`;
 const archivePath = join(outDir, archiveName);
 const updaterKeyPath = join(homedir(), ".tauri", "murmela-updater.key");
+// Built into the app and written to latest.json: Pro keys unlock releases from
+// before their update year ends (see src-tauri/src/license.rs).
+const releaseDate = new Date().toISOString().slice(0, 10);
 
 function fail(message) {
   console.error(`\n${message}`);
@@ -117,7 +120,7 @@ function writeLatestJson(signature, headline) {
   const latest = {
     version,
     notes: headline,
-    pub_date: new Date().toISOString(),
+    pub_date: skipBuild ? new Date().toISOString() : `${releaseDate}T00:00:00Z`,
     platforms: {
       "darwin-aarch64": {
         signature,
@@ -134,7 +137,9 @@ checkPreconditions();
 const notes = releaseNotes();
 console.log(`Releasing ${productName} ${version}: ${notes.headline}${dryRun ? " (dry run)" : ""}`);
 
-if (!skipBuild) run("npm", ["run", "tauri", "build"]);
+if (!skipBuild) {
+  run("npm", ["run", "tauri", "build"], { env: { ...process.env, MURMELA_RELEASE_DATE: releaseDate } });
+}
 if (!existsSync(appPath) || !existsSync(dmgPath)) fail(`Build output missing: ${appPath} or ${dmgPath}.`);
 checkNotarized();
 

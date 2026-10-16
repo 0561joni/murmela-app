@@ -249,6 +249,7 @@ fn update_settings(
                 shortcut: Some(previous.shortcut.clone()),
                 translation_enabled: Some(previous.translation_enabled),
                 translation_cycle_shortcut: Some(previous.translation_cycle_shortcut.clone()),
+                translation_cycle_languages: Some(previous.translation_cycle_languages.clone()),
                 translation_model_id: Some(previous.translation_model_id.clone()),
                 shortcut_mode: Some(previous.shortcut_mode.clone()),
                 language_mode: Some(previous.language_mode.clone()),
@@ -625,7 +626,7 @@ async fn save_translation_file(
     contents: String,
 ) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        text_translation::save_text_file_blocking(&app, &window, &file_name, &contents)
+        text_translation::save_text_file_blocking(&app, &window, "Save translation", &file_name, &contents)
             .map_err(|error| error.to_string())
     })
     .await
@@ -1316,6 +1317,11 @@ async fn check_for_updates(app: tauri::AppHandle) -> Result<updates::UpdateStatu
 }
 
 #[tauri::command]
+async fn download_update_as_free(app: tauri::AppHandle) -> Result<updates::UpdateStatus, String> {
+    updates::download_as_free(&app).await.map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
 fn install_update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
     updates::install_and_restart(&app).map_err(|error| format!("{error:#}"))
 }
@@ -1495,6 +1501,22 @@ fn get_network_activity(state: tauri::State<'_, AppState>) -> Result<NetworkActi
         destinations: network_activity::destinations(),
         entries: network_activity::list(&state.db_path).map_err(|error| error.to_string())?,
     })
+}
+
+/// Saves the network activity log, written as text by the Settings card.
+#[tauri::command]
+async fn export_network_activity(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    file_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        text_translation::save_text_file_blocking(&app, &window, "Export network activity", &file_name, &contents)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1788,6 +1810,7 @@ fn main() {
             get_update_status,
             check_for_updates,
             install_update_and_restart,
+            download_update_as_free,
             get_globe_key_action,
             open_keyboard_settings,
             request_microphone_access,
@@ -1796,6 +1819,7 @@ fn main() {
             reset_dictation_stats,
             get_network_activity,
             clear_network_activity,
+            export_network_activity,
             get_call_capture_support,
             get_call_status,
             start_call_recording,

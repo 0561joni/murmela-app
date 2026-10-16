@@ -1,6 +1,6 @@
 //! One-key dictation: hold the 🌐 fn key (or Right ⌥ Option) to talk, double-tap
 //! it for hands-free dictation and tap once more to finish. While the key is held,
-//! → and ← switch the output language.
+//! → and ← switch the output language; keep holding to dictate in the new one.
 //!
 //! The global-shortcut plugin cannot see a lone modifier, so on macOS an event tap
 //! watches the key itself. It needs the Accessibility permission Murmela already
@@ -16,8 +16,9 @@ pub const RIGHT_OPTION_KEY: &str = "RightAlt";
 pub const HOLD_DELAY: Duration = Duration::from_millis(180);
 /// Two taps closer than this start hands-free dictation.
 pub const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(400);
-/// An arrow this soon after push-to-talk started still means "switch language".
-const LATE_COMBO_WINDOW: Duration = Duration::from_millis(900);
+/// After → or ←, push-to-talk starts once the key has been held this long
+/// without another arrow, so a quick switch records nothing.
+pub const SWITCH_HOLD_DELAY: Duration = Duration::from_millis(500);
 
 /// Whether a dictation shortcut setting names a single key handled here.
 pub fn is_key_gesture(shortcut: &str) -> bool {
@@ -40,8 +41,6 @@ pub enum Action {
     StartHandsFree,
     /// Tap during hands-free dictation: transcribe and paste.
     StopHandsFree,
-    /// Push-to-talk turned out to be a language combo: discard it quietly.
-    CancelHold,
     /// Key + arrow: switch the output language.
     Cycle(Arrow),
 }
@@ -51,13 +50,16 @@ enum State {
     Idle { last_tap: Option<Instant> },
     /// Down, not yet long enough to be a hold.
     Pressed { since: Instant, combo: bool },
-    Holding { since: Instant },
+    Holding,
     /// Down for the second tap of a double-tap; its release is not a tap.
     StartedHandsFree,
     HandsFree,
     /// Down for the tap that ended hands-free dictation.
     StoppingHandsFree,
-    /// Held after a language combo; nothing more happens until release.
+    /// Held after → or ←; becomes push-to-talk in the new language after
+    /// `SWITCH_HOLD_DELAY` from the last arrow. Its release is not a tap.
+    Switched { since: Instant },
+    /// Held after another key combination; nothing more happens until release.
     Combo,
 }
 
@@ -101,7 +103,11 @@ impl GestureMachine {
     pub fn tick(&mut self, now: Instant) -> Option<Action> {
         match self.state {
             State::Pressed { since, combo: false } if now.duration_since(since) >= HOLD_DELAY => {
-                self.state = State::Holding { since: now };
+                self.state = State::Holding;
+                Some(Action::StartHold)
+            }
+            State::Switched { since } if now.duration_since(since) >= SWITCH_HOLD_DELAY => {
+                self.state = State::Holding;
                 Some(Action::StartHold)
             }
             _ => None,
@@ -111,7 +117,7 @@ impl GestureMachine {
     pub fn key_up(&mut self, now: Instant) -> Option<Action> {
         let (next, action) = match self.state {
             State::Pressed { combo: false, .. } => (State::Idle { last_tap: Some(now) }, None),
-            State::Holding { .. } => (State::Idle { last_tap: None }, Some(Action::StopHold)),
+            State::Holding => (State::Idle { last_tap: None }, Some(Action::StopHold)),
             State::StartedHandsFree => (State::HandsFree, None),
             State::HandsFree => (State::HandsFree, None),
             _ => (State::Idle { last_tap: None }, None),
@@ -124,8 +130,8 @@ impl GestureMachine {
     /// and whether the key press should be kept from the focused app.
     pub fn other_key(&mut self, now: Instant, arrow: Option<Arrow>) -> (Vec<Action>, bool) {
         match (self.state, arrow) {
-            (State::Pressed { since, .. }, Some(arrow)) => {
-                self.state = State::Pressed { since, combo: true };
+            (State::Pressed { .. } | State::Switched { .. }, Some(arrow)) => {
+                self.state = State::Switched { since: now };
                 (vec![Action::Cycle(arrow)], true)
             }
             (State::Pressed { since, .. }, None) => {
@@ -133,18 +139,19 @@ impl GestureMachine {
                 self.state = State::Pressed { since, combo: true };
                 (vec![], false)
             }
-            (State::Holding { since }, Some(arrow)) if now.duration_since(since) <= LATE_COMBO_WINDOW => {
+            (State::Switched { .. }, None) => {
                 self.state = State::Combo;
-                (vec![Action::CancelHold, Action::Cycle(arrow)], true)
+                (vec![], false)
             }
-            (State::Combo, Some(arrow)) => (vec![Action::Cycle(arrow)], true),
+            // Push-to-talk keeps recording; the dictation takes the new language.
+            (State::Holding, Some(arrow)) => (vec![Action::Cycle(arrow)], true),
             _ => (vec![], false),
         }
     }
 
     /// The key is held long enough that a tick is due.
     pub fn waiting_for_hold(&self) -> bool {
-        matches!(self.state, State::Pressed { combo: false, .. })
+        matches!(self.state, State::Pressed { combo: false, .. } | State::Switched { .. })
     }
 }
 
@@ -492,10 +499,11 @@ mod tests {
         let mut m = GestureMachine::default();
         m.key_down(t, false);
         assert_eq!(m.other_key(at(t, 60), Some(Arrow::Next)), (vec![Action::Cycle(Arrow::Next)], true));
-        assert_eq!(m.tick(at(t, 400)), None, "a combo never becomes a dictation");
-        assert_eq!(m.other_key(at(t, 500), Some(Arrow::Previous)), (vec![Action::Cycle(Arrow::Previous)], true));
-        assert_eq!(m.key_up(at(t, 600)), None);
-        assert_eq!(m.key_down(at(t, 700), false), None, "a combo is not the first tap of a double-tap");
+        assert_eq!(m.tick(at(t, 400)), None, "the hold waits after an arrow");
+        assert_eq!(m.other_key(at(t, 450), Some(Arrow::Previous)), (vec![Action::Cycle(Arrow::Previous)], true));
+        assert_eq!(m.tick(at(t, 900)), None, "each arrow restarts the wait");
+        assert_eq!(m.key_up(at(t, 920)), None, "a quick switch dictates nothing");
+        assert_eq!(m.key_down(at(t, 1_000), false), None, "a switch is not the first tap of a double-tap");
 
         let mut m = GestureMachine::default();
         m.key_down(t, false);
@@ -504,22 +512,38 @@ mod tests {
     }
 
     #[test]
-    fn an_arrow_soon_after_push_to_talk_started_is_still_a_language_switch() {
+    fn holding_on_after_a_switch_dictates_in_the_new_language() {
+        let t = Instant::now();
+        let mut m = GestureMachine::default();
+        m.key_down(t, false);
+        assert_eq!(m.other_key(at(t, 80), Some(Arrow::Next)), (vec![Action::Cycle(Arrow::Next)], true));
+        assert_eq!(m.tick(at(t, 580)), Some(Action::StartHold));
+        assert_eq!(m.key_up(at(t, 4_000)), Some(Action::StopHold));
+
+        let mut m = GestureMachine::default();
+        m.key_down(t, false);
+        m.other_key(at(t, 80), Some(Arrow::Next));
+        assert_eq!(m.other_key(at(t, 120), None), (vec![], false), "another key ends the gesture");
+        assert_eq!(m.tick(at(t, 900)), None);
+        assert_eq!(m.key_up(at(t, 1_000)), None);
+    }
+
+    #[test]
+    fn arrows_while_dictating_switch_its_language_at_any_pace() {
         let t = Instant::now();
         let mut m = GestureMachine::default();
         m.key_down(t, false);
         assert_eq!(m.tick(at(t, 200)), Some(Action::StartHold));
-        assert_eq!(
-            m.other_key(at(t, 500), Some(Arrow::Next)),
-            (vec![Action::CancelHold, Action::Cycle(Arrow::Next)], true)
-        );
-        assert_eq!(m.key_up(at(t, 700)), None, "no paste after a cancelled hold");
-
-        let mut m = GestureMachine::default();
-        m.key_down(t, false);
-        m.tick(at(t, 200));
-        assert_eq!(m.other_key(at(t, 3_000), Some(Arrow::Next)), (vec![], false), "mid-dictation arrows are ignored");
-        assert_eq!(m.key_up(at(t, 4_000)), Some(Action::StopHold));
+        // Slow, steady presses: every one switches, none stops the dictation.
+        for press in 1..=8 {
+            assert_eq!(
+                m.other_key(at(t, 200 + press * 1_500), Some(Arrow::Next)),
+                (vec![Action::Cycle(Arrow::Next)], true),
+                "press {press}"
+            );
+            assert_eq!(m.tick(at(t, 300 + press * 1_500)), None, "still the same dictation");
+        }
+        assert_eq!(m.key_up(at(t, 20_000)), Some(Action::StopHold), "release pastes in the last language");
     }
 
     #[test]

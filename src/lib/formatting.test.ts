@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBytes,
+  formatCalendarDay,
   formatClock,
   formatDateTime,
   formatDuration,
@@ -35,6 +36,12 @@ describe("shared output formatting", () => {
     expect(formatShortDate(iso, "en-US")).toBe("Sep 25");
     expect(formatDateTime(iso, "de-DE")).toBe("25.09.2026, 23:04");
     expect(formatDateTime(iso, "en-US")).toBe("Sep 25, 2026, 11:04 PM");
+  });
+
+  it("formats calendar days without shifting them across time zones", () => {
+    expect(formatCalendarDay("2027-10-16", "en-US")).toBe("October 16, 2027");
+    expect(formatCalendarDay("2027-10-16", "de-DE")).toBe("16. Oktober 2027");
+    expect(formatCalendarDay("not a day", "en-US")).toBe("not a day");
   });
 });
 

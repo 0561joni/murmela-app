@@ -1,6 +1,6 @@
 [package]
 name = "murmela"
-version = "1.1.0"
+version = "1.1.1"
 description = "Local-first desktop transcription app"
 license = "GPL-3.0-only"
 edition = "2021"
@@ -50,3 +50,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSValue", "NSUUID", "NSObject"] }
+
+# Model checksums hash gigabytes; unoptimised SHA-256 runs at ~30 MB/s and
+# trips the translation model's verification timeout in dev builds.
+[profile.dev.package.sha2]
+opt-level = 3

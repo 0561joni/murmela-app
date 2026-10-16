@@ -51,7 +51,7 @@ interface CatalogEntry {
 // Re-run the benchmark and recompute these when models change.
 const MODEL_CATALOG: Record<string, CatalogEntry> = {
   "live-pair": {
-    friendlyName: "Live dictation · Experimental", speed: 5, accuracy: 4,
+    friendlyName: "Live dictation", speed: 5, accuracy: 4,
     description: "Words appear while you speak. When you let go, a second pass rereads the whole recording and the text is pasted almost instantly. The most accurate dictation engine in Murmela's tests for German and for mixing German and English. Works with the dictation shortcut only.",
     technicalDetails: "Nemotron 3.5 ASR Streaming 0.6B (live) + Parakeet TDT 0.6B v3 (final) · CoreML · about 1.4 GB memory while loaded · five-minute limit",
     recommendedFor: ["shortcut_dictation"], technicalNames: ["Live pair · Nemotron + Parakeet"],

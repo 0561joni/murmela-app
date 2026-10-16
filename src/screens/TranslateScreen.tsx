@@ -642,7 +642,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
     <section className={"screen translate-screen" + (props.dragging ? " is-dragging" : "")}>
       <PageHeader title="Translate" description="Type, paste or open a text. It is translated on this Mac and never leaves it.">
         {ready ? (
-          <Button variant="ghost" title="Change the translation engine in Settings → Dictation" onClick={props.onOpenSettings}>
+          <Button variant="ghost" title="Change the translation engine in Settings → Languages" onClick={props.onOpenSettings}>
             <span role="status">{modelName} · {status?.loaded || usedModelId ? "ready" : "loads on first use"}</span>
           </Button>
         ) : null}
@@ -663,7 +663,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
       {needsSetup ? (
         <article className="translate-setup glass-panel" aria-label="Set up translation">
           <h2>Download a translation model to start</h2>
-          <p className="muted">Translation runs entirely on this Mac. Pick the model that fits your memory; you can add the other one later in Settings → Dictation.</p>
+          <p className="muted">Translation runs entirely on this Mac. Pick the model that fits your memory; you can add the other one later in Settings → Languages.</p>
           <ul className="translate-setup-models">
             {translationModels.map((model) => {
               const download = downloads[model.id];

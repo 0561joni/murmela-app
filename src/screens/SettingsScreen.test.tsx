@@ -54,8 +54,8 @@ vi.mock("../lib/api", async (importOriginal) => ({
 import { SettingsScreen } from "./SettingsScreen";
 import { resetLicenseCache } from "../hooks/useLicense";
 
-const proLicense = { pro: true, keyHint: "••••4D51", licensedTo: "Ada", activatedAt: "2026-10-14T12:00:00Z" };
-const freeLicense = { pro: false, keyHint: null, licensedTo: null, activatedAt: null };
+const proLicense = { pro: true, tier: "lifetime", updatesUntil: null, releaseDate: "2026-10-16", keyHint: "••••4D51", licensedTo: "Ada", activatedAt: "2026-10-14T12:00:00Z" };
+const freeLicense = { pro: false, tier: null, updatesUntil: null, releaseDate: "2026-10-16", keyHint: null, licensedTo: null, activatedAt: null };
 
 beforeEach(() => {
   // Most tests exercise Pro features; the free version has its own tests below.
@@ -68,6 +68,7 @@ const initialSettings: AppSettings = {
   shortcut: "CmdOrCtrl+Shift+Space",
   translationEnabled: false,
   translationCycleShortcut: "Ctrl+Alt+L",
+  translationCycleLanguages: ["en", "de", "fr", "es-AR"],
   translationModelId: "translategemma-12b-q6-k",
   shortcutMode: "push_to_talk",
   languageMode: "auto",
@@ -235,7 +236,7 @@ describe("Settings speaker identification", () => {
     apiMocks.listDownloadableModels.mockResolvedValue([asrModel, translationModel]);
     apiMocks.getModelTermsStatus.mockResolvedValue({ required: true, accepted: false });
     render(<Harness onSave={vi.fn()} onReload={vi.fn().mockResolvedValue(undefined)} />);
-    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
     fireEvent.click(await screen.findByRole("button", { name: "Download TranslateGemma 12B Q6_K" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Gemma Terms of Use" });
@@ -323,7 +324,7 @@ describe("Settings speaker identification", () => {
   it("captures the language shortcut separately and restores registration before saving", async () => {
     const save = vi.fn();
     render(<Harness onSave={save} onReload={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
     fireEvent.click(screen.getByRole("button", { name: "Set language shortcut" }));
     await screen.findByText("Press a shortcut… Esc to cancel");
     expect(apiMocks.suspendShortcutCapture).toHaveBeenCalledTimes(1);
@@ -333,6 +334,35 @@ describe("Settings speaker identification", () => {
     expect(save).not.toHaveBeenCalledWith(expect.objectContaining({ shortcut: expect.anything() }));
     fireEvent.click(await screen.findByRole("button", { name: "Reset language shortcut to default" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith({ translationCycleShortcut: "Ctrl+Alt+L" }));
+  });
+
+  it("says the language shortcut is off while translating while dictating is off", async () => {
+    const { unmount } = render(<Harness onSave={vi.fn()} onReload={vi.fn()} initial={{ shortcut: "Fn" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
+    expect(screen.getByText(/^Off\. Turn on Translate while you dictate/)).toBeTruthy();
+    expect(screen.queryByText(/^Switches Original/)).toBeNull();
+    unmount();
+
+    render(<Harness onSave={vi.fn()} onReload={vi.fn()} initial={{ shortcut: "Fn", translationEnabled: true }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
+    expect(screen.getByText(/^Switches Original/)).toBeTruthy();
+    expect(screen.getByText(/^Or hold/)).toBeTruthy();
+    expect(screen.queryByText(/^Off\./)).toBeNull();
+  });
+
+  it("chooses which languages the language shortcut visits", async () => {
+    const save = vi.fn();
+    render(<Harness onSave={save} onReload={vi.fn()} initial={{ translationEnabled: true, translationCycleLanguages: ["en", "fr"] }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
+    expect(screen.getByText(/^Switches Original → English → Français between/)).toBeTruthy();
+    const picker = screen.getByRole("group", { name: "Translate into" });
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "Polski" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ translationCycleLanguages: ["en", "fr", "pl"] }));
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "English" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ translationCycleLanguages: ["fr", "pl"] }));
+    fireEvent.click(within(picker).getByRole("checkbox", { name: "Français" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ translationCycleLanguages: ["pl"] }));
+    expect((within(picker).getByRole("checkbox", { name: "Polski" }) as HTMLInputElement).disabled, "the last language stays").toBe(true);
   });
 
   it("sets and resets the paste-last shortcut", async () => {
@@ -353,7 +383,7 @@ describe("Settings speaker identification", () => {
   it("chooses the spoken language", async () => {
     const save = vi.fn();
     render(<Harness onSave={save} onReload={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
     const select = screen.getByRole("combobox", { name: "Language you speak" }) as HTMLSelectElement;
     expect(select.value).toBe("auto");
     fireEvent.change(select, { target: { value: "de" } });
@@ -374,7 +404,7 @@ describe("Settings speaker identification", () => {
   it("keeps Control and Command apart when capturing a shortcut on macOS", async () => {
     const save = vi.fn();
     render(<Harness onSave={save} onReload={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Dictation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Languages" }));
     expect(screen.getByText("⌃+⌥+L")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Set language shortcut" }));
     await screen.findByText("Press a shortcut… Esc to cancel");

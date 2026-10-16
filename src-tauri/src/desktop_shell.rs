@@ -308,6 +308,18 @@ impl DesktopShellController {
             current.output_mode = mode;
         }
     }
+    /// Shows a new output language in the running "Listening" overlay.
+    pub fn show_output_mode(&self, mode: crate::translation::OutputMode) -> Result<()> {
+        let mut current = self
+            .overlay_payload
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Overlay unavailable"))?;
+        current.output_mode = mode;
+        current.revision = current.revision.wrapping_add(1);
+        let payload = current.clone();
+        drop(current);
+        self.dispatch_overlay(payload)
+    }
     pub fn overlay_revision(&self) -> u64 {
         self.overlay_payload().revision
     }

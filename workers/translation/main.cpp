@@ -135,7 +135,10 @@ static std::vector<llama_token> prompt(const llama_vocab * vocab, const Chunk & 
     const auto & table = languages();
     const bool formal = tone == "formal", informal = tone == "informal";
     std::string instruction = "You are a professional translator. Translate the following ";
-    if (source.empty()) instruction += "German, English, or mixed German and English text";
+    const bool german_english = std::all_of(hints.begin(), hints.end(),
+        [](const std::string & hint) { return hint == "de" || hint == "en"; });
+    if (source.empty() && german_english) instruction += "German, English, or mixed German and English text";
+    else if (source.empty()) instruction += "text";
     else if (source == "auto" || !table.count(source)) instruction += "text";
     else instruction += table.at(source).name + " text";
     instruction += " into ";
@@ -291,7 +294,7 @@ static Options options(const json & request) {
     const auto & strict_value = request.contains("strictInstruction") ? request.at("strictInstruction") : json();
     value.strict = strict_value.is_string() ? strict_value.get<std::string>().substr(0, 600) : std::string();
     value.hints = request.value("sourceLanguages", std::vector<std::string>{});
-    if (!languages().count(value.target) || (value.source.empty() && value.target != "fr" && value.target != "es-AR")
+    if (!languages().count(value.target)
         || (value.tone != "auto" && value.tone != "informal" && value.tone != "formal"))
         throw std::runtime_error("INVALID_REQUEST");
     return value;

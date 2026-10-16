@@ -200,7 +200,7 @@ pub(crate) fn source_language(settings: &crate::settings::AppSettings) -> Result
         .unwrap_or_default();
     match code.as_str() {
         "de" | "en" | "es" | "fr" | "it" | "pt" => Ok(code),
-        _ => bail!("LIVE_PAIR_SETUP: Live dictation doesn't support this language. Choose Automatic or one of its languages under Settings → Dictation → Language you speak."),
+        _ => bail!("LIVE_PAIR_SETUP: Live dictation doesn't support this language. Choose Automatic or one of its languages under Settings → Languages → Language you speak."),
     }
 }
 

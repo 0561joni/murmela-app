@@ -981,7 +981,7 @@ fn live_pair_spec() -> DownloadableModelSpec {
         id: crate::live_pair::MODEL_ID,
         engine: crate::live_pair::ENGINE,
         model_name: crate::live_pair::MODEL_NAME,
-        description: "Experimental shortcut dictation with live text while you speak (Nemotron 3.5 streaming) and a final pass over the whole recording on release (Parakeet v3), pasted once. Both models stay loaded on the Neural Engine. German, English and other Western European languages; up to five minutes.",
+        description: "Shortcut dictation with live text while you speak (Nemotron 3.5 streaming) and a final pass over the whole recording on release (Parakeet v3), pasted once. Both models stay loaded on the Neural Engine. German, English and other Western European languages; up to five minutes.",
         requirements: Some("Apple Silicon · macOS 14+ · about 1.4 GB of memory while loaded · includes the 560 ms and 1120 ms preview variants"),
         size_bytes: crate::live_pair::total_bytes(),
         profile: ModelProfile::Fast,

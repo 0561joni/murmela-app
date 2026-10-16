@@ -984,8 +984,7 @@ export function App() {
         await handleResolveAccessibility();
         return;
       }
-      setSettingsSection(item === "model" ? "models" : "audio");
-      // "translation" and "shortcut" both live in Settings → Dictation.
+      setSettingsSection(item === "model" ? "models" : item === "translation" ? "languages" : "audio");
       setScreen("settings");
     },
     [handleOpenMicrophoneSettings, handleRequestMicrophone, handleResolveAccessibility, readiness?.microphone],
@@ -1348,6 +1347,7 @@ export function App() {
             setSettingsSection("audio");
             setScreen("settings");
           }}
+          onSaveSettings={saveSettings}
           onFinish={closeFirstRun}
         />
       ) : null}
@@ -1618,7 +1618,7 @@ export function App() {
                     openRequest={translateOpenRequest}
                     dragging={isTranslateDragActive}
                     onOpenSettings={() => {
-                      setSettingsSection("audio");
+                      setSettingsSection("languages");
                       setScreen("settings");
                     }}
                     onLibraryChanged={() => setTranslationsVersion((value) => value + 1)}
@@ -1634,6 +1634,7 @@ export function App() {
                   installedModels={installedModels}
                   onSave={saveSettings}
                   onReloadModelState={reloadModelState}
+                  onRunWelcomeSetup={() => setFirstRunOpen(true)}
                 />
               ) : null}
 

@@ -110,7 +110,27 @@ pub fn initialize_database(db_path: &Path) -> Result<()> {
 pub(crate) fn ensure_schema(connection: &Connection) -> Result<()> {
     connection
         .execute_batch(SCHEMA)
-        .context("failed to create the database tables")
+        .context("failed to create the database tables")?;
+    // Settings columns added after the table first shipped (1.1.1).
+    add_settings_column(
+        connection,
+        "translation_cycle_languages",
+        "TEXT NOT NULL DEFAULT 'en,de,fr,es-AR'",
+    )
+}
+
+fn add_settings_column(connection: &Connection, column: &str, definition: &str) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('settings') WHERE name = ?1",
+        [column],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        connection
+            .execute_batch(&format!("ALTER TABLE settings ADD COLUMN {column} {definition};"))
+            .with_context(|| format!("failed to add settings column {column}"))?;
+    }
+    Ok(())
 }
 
 /// True when the user accepted exactly this version of the model's terms.
@@ -239,7 +259,7 @@ pub fn apply_preferred_model_defaults_for_db_path(
 
 pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Result<AppSettings> {
     let current = get_settings_from_db_path(db_path)?;
-    let next = AppSettings {
+    let mut next = AppSettings {
         default_mode: patch.default_mode.unwrap_or(current.default_mode),
         shortcut: patch.shortcut.unwrap_or(current.shortcut),
         translation_enabled: patch
@@ -248,6 +268,9 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
         translation_cycle_shortcut: patch
             .translation_cycle_shortcut
             .unwrap_or(current.translation_cycle_shortcut),
+        translation_cycle_languages: patch
+            .translation_cycle_languages
+            .unwrap_or(current.translation_cycle_languages),
         translation_model_id: patch
             .translation_model_id
             .unwrap_or(current.translation_model_id),
@@ -307,9 +330,26 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
     if !crate::settings::LIVE_PAIR_CHUNKS_MS.contains(&next.live_pair_chunk_ms) {
         bail!("Choose a live preview chunk of 560 or 1120 ms.");
     }
+    if let Some(code) = next
+        .translation_cycle_languages
+        .iter()
+        .find(|code| crate::translation::OutputMode::language(code).is_none())
+    {
+        bail!("Unsupported output language: {code}.");
+    }
+    // Stored in shortcut order, without duplicates.
+    next.translation_cycle_languages = crate::translation::OUTPUT_LANGUAGES
+        .iter()
+        .map(|mode| mode.code())
+        .filter(|code| next.translation_cycle_languages.iter().any(|picked| picked == code))
+        .map(String::from)
+        .collect();
+    if next.translation_cycle_languages.is_empty() {
+        bail!("Pick at least one language for the language shortcut.");
+    }
     let connection = open_connection_by_path(db_path)?;
     connection.execute(
-        "UPDATE settings SET default_mode = ?1, shortcut = ?2, shortcut_mode = ?3, language_mode = ?4, fixed_language = ?5, preferred_input_device = ?6, insert_behavior = ?7, launch_at_login_enabled = ?8, metal_enabled = ?9, shortcut_dictation_model_profile = ?10, shortcut_dictation_selected_model_id = ?11, quick_dictate_model_profile = ?12, quick_dictate_selected_model_id = ?13, file_transcribe_model_profile = ?14, file_transcribe_selected_model_id = ?15, save_history = ?16, sounds_enabled = ?17, volume_ducking_enabled = ?18, file_diarization_enabled = ?19, appearance = ?20, motion_preference = ?21, translation_enabled = ?22, translation_cycle_shortcut = ?23, translation_model_id = ?24, live_pair_chunk_ms = ?25, live_pair_keep_loaded = ?26, paste_last_shortcut = ?27, serious_mode = ?28, auto_update_enabled = ?29 WHERE id = 1",
+        "UPDATE settings SET default_mode = ?1, shortcut = ?2, shortcut_mode = ?3, language_mode = ?4, fixed_language = ?5, preferred_input_device = ?6, insert_behavior = ?7, launch_at_login_enabled = ?8, metal_enabled = ?9, shortcut_dictation_model_profile = ?10, shortcut_dictation_selected_model_id = ?11, quick_dictate_model_profile = ?12, quick_dictate_selected_model_id = ?13, file_transcribe_model_profile = ?14, file_transcribe_selected_model_id = ?15, save_history = ?16, sounds_enabled = ?17, volume_ducking_enabled = ?18, file_diarization_enabled = ?19, appearance = ?20, motion_preference = ?21, translation_enabled = ?22, translation_cycle_shortcut = ?23, translation_model_id = ?24, live_pair_chunk_ms = ?25, live_pair_keep_loaded = ?26, paste_last_shortcut = ?27, serious_mode = ?28, auto_update_enabled = ?29, translation_cycle_languages = ?30 WHERE id = 1",
         params![
             to_default_mode(next.default_mode),
             next.shortcut,
@@ -336,6 +376,7 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
             next.live_pair_chunk_ms, next.live_pair_keep_loaded, next.paste_last_shortcut,
             next.serious_mode,
             next.auto_update_enabled,
+            next.translation_cycle_languages.join(","),
         ],
     )?;
     get_settings_from_db_path(db_path)
@@ -646,7 +687,7 @@ pub(crate) fn open_connection_by_path(db_path: &Path) -> Result<Connection> {
 
 fn query_settings(connection: &Connection) -> Result<AppSettings> {
     let settings = connection.query_row(
-        "SELECT default_mode, shortcut, shortcut_mode, language_mode, fixed_language, preferred_input_device, insert_behavior, launch_at_login_enabled, metal_enabled, shortcut_dictation_model_profile, shortcut_dictation_selected_model_id, quick_dictate_model_profile, quick_dictate_selected_model_id, file_transcribe_model_profile, file_transcribe_selected_model_id, save_history, sounds_enabled, volume_ducking_enabled, file_diarization_enabled, appearance, motion_preference, translation_enabled, translation_cycle_shortcut, translation_model_id, live_pair_chunk_ms, live_pair_keep_loaded, paste_last_shortcut, serious_mode, auto_update_enabled FROM settings WHERE id = 1",
+        "SELECT default_mode, shortcut, shortcut_mode, language_mode, fixed_language, preferred_input_device, insert_behavior, launch_at_login_enabled, metal_enabled, shortcut_dictation_model_profile, shortcut_dictation_selected_model_id, quick_dictate_model_profile, quick_dictate_selected_model_id, file_transcribe_model_profile, file_transcribe_selected_model_id, save_history, sounds_enabled, volume_ducking_enabled, file_diarization_enabled, appearance, motion_preference, translation_enabled, translation_cycle_shortcut, translation_model_id, live_pair_chunk_ms, live_pair_keep_loaded, paste_last_shortcut, serious_mode, auto_update_enabled, translation_cycle_languages FROM settings WHERE id = 1",
         [],
         map_settings_row,
     )?;
@@ -1099,6 +1140,12 @@ fn map_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppSettings> {
         paste_last_shortcut: row.get("paste_last_shortcut")?,
         serious_mode: row.get("serious_mode")?,
         auto_update_enabled: row.get("auto_update_enabled")?,
+        translation_cycle_languages: row
+            .get::<_, String>("translation_cycle_languages")?
+            .split(',')
+            .filter(|code| !code.is_empty())
+            .map(String::from)
+            .collect(),
     })
 }
 
@@ -1445,6 +1492,35 @@ mod tests {
         )
         .is_err());
         assert_eq!(get_settings_from_db_path(&path).unwrap().live_pair_chunk_ms, 1120);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn cycle_languages_migrate_into_old_databases_and_validate() {
+        let path =
+            std::env::temp_dir().join(format!("murmela-cycle-langs-{}.sqlite", Uuid::new_v4()));
+        let connection = open_connection_by_path(&path).unwrap();
+        ensure_schema(&connection).unwrap();
+        seed_default_settings(&connection).unwrap();
+        // A 1.1 database has no translation_cycle_languages column.
+        connection
+            .execute_batch("ALTER TABLE settings DROP COLUMN translation_cycle_languages;")
+            .unwrap();
+        ensure_schema(&connection).unwrap();
+        ensure_schema(&connection).unwrap();
+        let defaults = get_settings_from_db_path(&path).unwrap();
+        assert_eq!(defaults.translation_cycle_languages, ["en", "de", "fr", "es-AR"]);
+
+        let patch = |codes: &[&str]| SettingsPatch {
+            translation_cycle_languages: Some(codes.iter().map(|c| c.to_string()).collect()),
+            ..Default::default()
+        };
+        let updated = update_settings_for_db_path(&path, patch(&["pl", "it", "pl", "de"])).unwrap();
+        assert_eq!(updated.translation_cycle_languages, ["de", "it", "pl"], "shortcut order, no duplicates");
+        assert!(update_settings_for_db_path(&path, patch(&[])).is_err());
+        assert!(update_settings_for_db_path(&path, patch(&["original"])).is_err());
+        assert!(update_settings_for_db_path(&path, patch(&["de", "xx"])).is_err());
+        assert_eq!(get_settings_from_db_path(&path).unwrap().translation_cycle_languages, ["de", "it", "pl"]);
         let _ = fs::remove_file(path);
     }
 

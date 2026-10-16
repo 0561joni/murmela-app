@@ -85,6 +85,8 @@ export interface AppSettings {
   shortcut: string;
   translationEnabled: boolean;
   translationCycleShortcut: string;
+  /** Output languages the language shortcut visits after Original, in shortcut order. */
+  translationCycleLanguages: Exclude<OutputMode, "original">[];
   translationModelId: string;
   shortcutMode: ShortcutMode;
   languageMode: LanguageMode;
@@ -126,6 +128,7 @@ export interface SettingsPatch {
   shortcut?: string;
   translationEnabled?: boolean;
   translationCycleShortcut?: string;
+  translationCycleLanguages?: Exclude<OutputMode, "original">[];
   translationModelId?: string;
   shortcutMode?: ShortcutMode;
   languageMode?: LanguageMode;
@@ -559,7 +562,15 @@ export interface NetworkActivity {
   entries: NetworkActivityEntry[];
 }
 
-export type UpdateState = "idle" | "checking" | "up_to_date" | "downloading" | "ready" | "failed";
+export type UpdateState =
+  | "idle"
+  | "checking"
+  | "up_to_date"
+  | "downloading"
+  | "ready"
+  | "failed"
+  /** A newer release exists, but this Mac's Pro key doesn't cover it. */
+  | "needs_renewal";
 
 export interface UpdateStatus {
   state: UpdateState;
@@ -569,6 +580,8 @@ export interface UpdateStatus {
   notes: string | null;
   message: string | null;
   lastCheckedMs: number | null;
+  /** With `needs_renewal`: the last day (YYYY-MM-DD) of the Pro key's update year. */
+  proUpdatesUntil: string | null;
 }
 
 export interface DictationReadiness {
@@ -660,7 +673,7 @@ export interface ReviewAudio {
   durationMs: number | null;
 }
 
-export type OutputMode = "original" | "fr" | "es-AR";
+export type OutputMode = "original" | "en" | "de" | "fr" | "es" | "es-AR" | "it" | "pt-BR" | "nl" | "pl";
 export interface DictationOutput {
   sourceLanguages?: string[];
   sessionId: string;
@@ -686,8 +699,18 @@ export interface DictationOutputState {
 }
 
 /** Murmela Pro license on this Mac. Activated once online, then checked only locally. */
+/** Pro: one year of updates. Lifetime: updates for good. */
+export type LicenseTier = "pro" | "lifetime";
+
 export interface LicenseStatus {
+  /** The Pro features are unlocked in this version of Murmela. */
   pro: boolean;
+  /** The key on this Mac. A Pro key with `pro: false` means this version came out after its update year. */
+  tier: LicenseTier | null;
+  /** Last day (YYYY-MM-DD) whose releases a Pro key unlocks; null for Lifetime. */
+  updatesUntil: string | null;
+  /** The day this version of Murmela was released (YYYY-MM-DD). */
+  releaseDate: string;
   keyHint: string | null;
   licensedTo: string | null;
   activatedAt: string | null;

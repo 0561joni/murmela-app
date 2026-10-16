@@ -68,6 +68,14 @@ export function formatShortDate(iso: string, locale?: string) {
   return new Date(iso).toLocaleDateString(locale, { day: "numeric", month: "short" });
 }
 
+/** A calendar day such as "2027-10-16": "16. Oktober 2027" / "October 16, 2027", in any time zone. */
+export function formatCalendarDay(day: string, locale?: string) {
+  const date = new Date(`${day}T00:00:00Z`);
+  return Number.isNaN(date.getTime())
+    ? day
+    : date.toLocaleDateString(locale, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
 /** "25.09.2026, 23:04" / "Sep 25, 2026, 11:04 PM" */
 export function formatDateTime(iso: string, locale?: string) {
   return new Date(iso).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
@@ -101,7 +109,7 @@ const ERROR_COPY: Record<string, string> = {
   MODEL_RUNTIME_MISSING: "Part of this engine is missing. Download it again in Settings → Engines.",
   MODEL_INCOMPLETE: "This engine's download is incomplete. Download it again in Settings → Engines.",
   MODEL_LOAD_FAILED: "The engine couldn't start. Try again, or download it again in Settings → Engines.",
-  MODEL_UNSUPPORTED_LANGUAGE: "This engine doesn't support the chosen language. Pick Automatic or another language in Settings → Dictation.",
+  MODEL_UNSUPPORTED_LANGUAGE: "This engine doesn't support the chosen language. Pick Automatic or another language in Settings → Languages.",
   MODEL_AUDIO_TOO_LONG: "This recording is too long for the chosen engine. Pick another file engine in Settings → Engines.",
   MODEL_DOWNLOAD_CANCELED: "Download canceled.",
   MODEL_TERMS_REQUIRED: "Accept the Gemma Terms of Use first, then start the download again.",
@@ -137,7 +145,7 @@ const MESSAGE_COPY: Array<[RegExp, string]> = [
     "This microphone's audio format isn't supported. Try another microphone."],
   [/diarization worker exited/i, "Speaker identification stopped unexpectedly. Try again."],
   [/translation protocol mismatch/i,
-    "The translation engine needs repair: Settings → Dictation → Check and repair."],
+    "The translation engine needs repair: Settings → Languages → Check and repair."],
   [/watchdog expired/i,
     "Transcription took too long and was stopped. Try again, or pick a faster file engine."],
   [/review storage unavailable/i, "The transcript couldn't be opened. Restart Murmela and try again."],

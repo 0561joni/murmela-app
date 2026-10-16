@@ -16,13 +16,25 @@ vi.mock("../lib/api", async (importOriginal) => ({
 import { LicenseCard } from "./LicenseCard";
 import { activateFromLink, resetLicenseCache } from "../hooks/useLicense";
 
-const free: LicenseStatus = { pro: false, keyHint: null, licensedTo: null, activatedAt: null };
+const free: LicenseStatus = {
+  pro: false,
+  tier: null,
+  updatesUntil: null,
+  releaseDate: "2026-10-16",
+  keyHint: null,
+  licensedTo: null,
+  activatedAt: null,
+};
 const pro: LicenseStatus = {
   pro: true,
+  tier: "pro",
+  updatesUntil: "2099-10-14",
+  releaseDate: "2026-10-16",
   keyHint: "••••4D51",
   licensedTo: "Ada Lovelace",
   activatedAt: "2026-10-14T12:00:00Z",
 };
+const lifetime: LicenseStatus = { ...pro, tier: "lifetime", updatesUntil: null };
 
 beforeEach(() => {
   resetLicenseCache();
@@ -44,6 +56,43 @@ describe("LicenseCard", () => {
     expect(await screen.findByText("Licensed to Ada Lovelace")).toBeTruthy();
     expect(apiMocks.activateLicense).toHaveBeenCalledWith(" 38B1460A-5104-4067-A91D-77B872934D51 ");
     expect(screen.getByText(/Key ••••4D51/)).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Murmela Pro/ })).toBeTruthy();
+    expect(screen.getByText("Updates until October 14, 2099")).toBeTruthy();
+  });
+
+  it("shows Lifetime keys with updates for life and no renewal form", async () => {
+    apiMocks.getLicenseStatus.mockResolvedValue(lifetime);
+    render(<LicenseCard />);
+    expect(await screen.findByRole("heading", { name: /Murmela Lifetime/ })).toBeTruthy();
+    expect(screen.getByText("Updates for life")).toBeTruthy();
+    expect(screen.queryByLabelText("New license key")).toBeNull();
+  });
+
+  it("says when a Pro key's updates have ended but this version keeps Pro", async () => {
+    apiMocks.getLicenseStatus.mockResolvedValue({ ...pro, updatesUntil: "2026-10-20", releaseDate: "2026-10-16" });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2027-01-05T12:00:00Z"));
+    try {
+      render(<LicenseCard />);
+      expect(await screen.findByText("Updates ended on October 20, 2026")).toBeTruthy();
+      expect(screen.getByText(/This version keeps Pro for good/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("explains a version newer than the Pro key's updates and takes a renewal key", async () => {
+    const ended: LicenseStatus = { ...pro, pro: false, updatesUntil: "2027-10-16", releaseDate: "2027-11-02" };
+    apiMocks.getLicenseStatus.mockResolvedValue(ended);
+    apiMocks.activateLicense.mockResolvedValue({ ...pro, updatesUntil: "2028-11-20", releaseDate: "2027-11-02" });
+    render(<LicenseCard />);
+    expect(await screen.findByText("This version is newer than your Pro updates")).toBeTruthy();
+    expect(screen.getByText(/ended on October 16, 2027, and this version came out on November 2, 2027/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("New license key"), { target: { value: "renewal-key-0002" } });
+    fireEvent.click(screen.getByRole("button", { name: "Activate" }));
+    expect(await screen.findByText("Updates until November 20, 2028")).toBeTruthy();
+    expect(apiMocks.activateLicense).toHaveBeenCalledWith("renewal-key-0002");
   });
 
   it("shows the server's explanation when a key is refused", async () => {

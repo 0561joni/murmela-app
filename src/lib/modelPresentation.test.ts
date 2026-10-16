@@ -13,7 +13,7 @@ const MODEL_CASES = [
   ["moss-transcribe-diarize-0.9b-f16", "MOSS Transcribe + Diarize 0.9B F16", "MOSS with speakers", 1, 4],
   ["vibevoice-asr-8bit-mlx", "VibeVoice-ASR 8-bit MLX", "VibeVoice · Experimental", 1.5, 5],
   ["qwen3-asr-1.7b-bf16", "Qwen3-ASR-1.7B", "Qwen", 2.5, 4],
-  ["live-pair", "Live pair · Nemotron + Parakeet", "Live dictation · Experimental", 5, 4],
+  ["live-pair", "Live pair · Nemotron + Parakeet", "Live dictation", 5, 4],
   ["ggml-large-v3-turbo-q5_0-bin", "ggml-large-v3-turbo-q5_0.bin", "Whisper Turbo Compact", 2.5, 1.5],
   ["ggml-large-v3-turbo-bin", "ggml-large-v3-turbo.bin", "Whisper Turbo", 2.5, 2],
   ["ggml-medium-bin", "ggml-medium.bin", "Whisper Medium", 3, 1],

@@ -16,7 +16,7 @@ import { resetLicenseCache } from "../hooks/useLicense";
 
 beforeEach(() => {
   resetLicenseCache();
-  apiMocks.getLicenseStatus.mockReset().mockResolvedValue({ pro: false, keyHint: null, licensedTo: null, activatedAt: null });
+  apiMocks.getLicenseStatus.mockReset().mockResolvedValue({ pro: false, tier: null, updatesUntil: null, releaseDate: "2026-10-16", keyHint: null, licensedTo: null, activatedAt: null });
   apiMocks.openProPage.mockReset().mockResolvedValue(undefined);
 });
 
@@ -50,5 +50,23 @@ describe("ProBanner", () => {
     resolve({ pro: true, keyHint: "••••4D51", licensedTo: "Ada", activatedAt: null });
     await Promise.resolve();
     expect(screen.queryByRole("region", { name: "Murmela Pro" })).toBeNull();
+  });
+
+  it("asks for a renewal when this version is newer than the Pro key's updates", async () => {
+    apiMocks.getLicenseStatus.mockResolvedValue({
+      pro: false,
+      tier: "pro",
+      updatesUntil: "2027-10-16",
+      releaseDate: "2027-11-02",
+      keyHint: "••••4D51",
+      licensedTo: "Ada",
+      activatedAt: null,
+    });
+    render(<ProBanner />);
+    expect(await screen.findByText("Pro is off in this version.")).toBeTruthy();
+    expect(screen.getByText(/ended on October 16, 2027/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Renew" }));
+    expect(apiMocks.openProPage).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Enter a new key" })).toBeTruthy();
   });
 });

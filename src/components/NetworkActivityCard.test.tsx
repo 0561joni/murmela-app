@@ -5,6 +5,7 @@ import type { NetworkActivity } from "../types/domain";
 const apiMocks = vi.hoisted(() => ({
   getNetworkActivity: vi.fn(),
   clearNetworkActivity: vi.fn(),
+  exportNetworkActivity: vi.fn(),
 }));
 
 vi.mock("../lib/api", async (importOriginal) => ({
@@ -12,7 +13,7 @@ vi.mock("../lib/api", async (importOriginal) => ({
   ...apiMocks,
 }));
 
-import { NetworkActivityCard } from "./NetworkActivityCard";
+import { NetworkActivityCard, networkActivityText } from "./NetworkActivityCard";
 
 const activity: NetworkActivity = {
   destinations: [
@@ -54,9 +55,41 @@ const activity: NetworkActivity = {
 beforeEach(() => {
   apiMocks.getNetworkActivity.mockReset().mockResolvedValue(activity);
   apiMocks.clearNetworkActivity.mockReset().mockResolvedValue(undefined);
+  apiMocks.exportNetworkActivity.mockReset().mockResolvedValue("/Users/ada/Desktop/log.txt");
 });
 
 describe("NetworkActivityCard", () => {
+  it("writes the log as plain text, one connection per line", () => {
+    const text = networkActivityText(activity, new Date("2026-10-16T12:00:00Z"));
+    const lines = text.trimEnd().split("\n");
+    expect(lines[0]).toBe("Murmela network activity");
+    expect(lines).toContain("- GitHub (github.com): Checks for a new version of Murmela.");
+    expect(lines).toContain("Connections made (3):");
+    const connections = lines.slice(lines.indexOf("Connections made (3):") + 1);
+    expect(connections).toHaveLength(3);
+    expect(connections[0]).toMatch(/ · GitHub \(github\.com\) · Update check \[Failed\] · size not reported$/);
+    expect(connections[2]).toMatch(/ · Hugging Face \(huggingface\.co\) · Download Whisper Large v3 Turbo · 1\.6 GB$/);
+    expect(networkActivityText({ ...activity, entries: [] })).toContain("Connections made (0):\nNone since");
+  });
+
+  it("exports the log and says where it was saved", async () => {
+    render(<NetworkActivityCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Export…" }));
+    await waitFor(() => expect(apiMocks.exportNetworkActivity).toHaveBeenCalledTimes(1));
+    const [fileName, contents] = apiMocks.exportNetworkActivity.mock.calls[0];
+    expect(fileName).toMatch(/^Murmela network activity \d{4}-\d{2}-\d{2}\.txt$/);
+    expect(contents).toContain("Update check [Failed]");
+    expect(await screen.findByText("Saved to /Users/ada/Desktop/log.txt")).toBeTruthy();
+  });
+
+  it("says nothing when the save is canceled", async () => {
+    apiMocks.exportNetworkActivity.mockResolvedValue(null);
+    render(<NetworkActivityCard />);
+    fireEvent.click(await screen.findByRole("button", { name: "Export…" }));
+    await waitFor(() => expect(apiMocks.exportNetworkActivity).toHaveBeenCalled());
+    expect(screen.queryByText(/^Saved to/)).toBeNull();
+  });
+
   it("lists the only three places Murmela can contact", async () => {
     render(<NetworkActivityCard />);
     const list = await screen.findByRole("list", { name: "Places Murmela can contact" });

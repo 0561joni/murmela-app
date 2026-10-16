@@ -891,6 +891,7 @@ pub async fn pick_text_file(window: &tauri::Window) -> Result<Option<OpenedTextF
 pub fn save_text_file_blocking(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
+    title: &str,
     file_name: &str,
     contents: &str,
 ) -> Result<Option<String>> {
@@ -909,7 +910,7 @@ pub fn save_text_file_blocking(
         .dialog()
         .file()
         .set_parent(window)
-        .set_title("Save translation")
+        .set_title(title)
         .set_file_name(file_name)
         .add_filter(label, &[extension.as_str()])
         .blocking_save_file();
@@ -919,7 +920,7 @@ pub fn save_text_file_blocking(
         None => return Ok(None),
     };
     std::fs::write(&path, contents)
-        .with_context(|| format!("Could not save the translation to {}", path.display()))?;
+        .with_context(|| format!("Could not save the file to {}", path.display()))?;
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 

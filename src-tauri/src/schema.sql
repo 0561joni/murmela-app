@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Defaults match translation::DEFAULT_SHORTCUT and settings::DEFAULT_PASTE_LAST_SHORTCUT.
   translation_enabled INTEGER NOT NULL DEFAULT 0,
   translation_cycle_shortcut TEXT NOT NULL DEFAULT 'Ctrl+Alt+L',
+  -- Comma-separated; matches translation::DEFAULT_CYCLE_LANGUAGES. Added after 1.1 (see storage::ensure_schema).
+  translation_cycle_languages TEXT NOT NULL DEFAULT 'en,de,fr,es-AR',
   paste_last_shortcut TEXT NOT NULL DEFAULT 'Ctrl+Alt+V',
   translation_model_id TEXT NOT NULL DEFAULT 'translategemma-12b-q6-k',
   appearance TEXT NOT NULL DEFAULT 'system',

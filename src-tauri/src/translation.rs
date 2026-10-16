@@ -195,26 +195,98 @@ pub enum OutputMode {
     #[default]
     #[serde(rename = "original")]
     Original,
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "de")]
+    German,
     #[serde(rename = "fr")]
     French,
+    #[serde(rename = "es")]
+    Spanish,
     #[serde(rename = "es-AR")]
     SpanishArgentina,
+    #[serde(rename = "it")]
+    Italian,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "nl")]
+    Dutch,
+    #[serde(rename = "pl")]
+    Polish,
 }
+/// Dictation output languages in the order the language shortcut visits them
+/// (the Translate screen's order).
+pub const OUTPUT_LANGUAGES: [OutputMode; 9] = [
+    OutputMode::English,
+    OutputMode::German,
+    OutputMode::French,
+    OutputMode::Spanish,
+    OutputMode::SpanishArgentina,
+    OutputMode::Italian,
+    OutputMode::PortugueseBrazil,
+    OutputMode::Dutch,
+    OutputMode::Polish,
+];
+/// Languages the shortcut visits until the user picks others.
+pub const DEFAULT_CYCLE_LANGUAGES: [&str; 4] = ["en", "de", "fr", "es-AR"];
 impl OutputMode {
-    pub fn next(self) -> Self {
+    pub fn code(self) -> &'static str {
         match self {
-            Self::Original => Self::French,
-            Self::French => Self::SpanishArgentina,
-            Self::SpanishArgentina => Self::Original,
+            Self::Original => "original",
+            Self::English => "en",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Spanish => "es",
+            Self::SpanishArgentina => "es-AR",
+            Self::Italian => "it",
+            Self::PortugueseBrazil => "pt-BR",
+            Self::Dutch => "nl",
+            Self::Polish => "pl",
         }
     }
-    pub fn previous(self) -> Self {
-        match self {
-            Self::Original => Self::SpanishArgentina,
-            Self::French => Self::Original,
-            Self::SpanishArgentina => Self::French,
-        }
+    /// An output language (never Original) by its code.
+    pub fn language(code: &str) -> Option<Self> {
+        OUTPUT_LANGUAGES.into_iter().find(|mode| mode.code() == code)
     }
+    /// The next stop after this one: Original, then the `cycle` languages in
+    /// `OUTPUT_LANGUAGES` order. Works from a language outside `cycle` too.
+    pub fn next(self, cycle: &[OutputMode]) -> Self {
+        Self::step(self, cycle, false)
+    }
+    pub fn previous(self, cycle: &[OutputMode]) -> Self {
+        Self::step(self, cycle, true)
+    }
+    fn step(self, cycle: &[OutputMode], back: bool) -> Self {
+        let mut stops = vec![Self::Original];
+        stops.extend(OUTPUT_LANGUAGES);
+        if back {
+            stops.reverse();
+        }
+        let from = stops.iter().position(|mode| *mode == self).unwrap_or(0);
+        stops
+            .iter()
+            .cycle()
+            .skip(from + 1)
+            .take(stops.len())
+            .copied()
+            .find(|mode| *mode == Self::Original || cycle.contains(mode))
+            .unwrap_or(Self::Original)
+    }
+    /// Whether a dictation detected only in `languages` is already in this
+    /// language, so translating it would only paraphrase it.
+    pub fn already_in(self, languages: &[String]) -> bool {
+        let code = match self {
+            Self::Original => return false,
+            Self::SpanishArgentina => "es",
+            Self::PortugueseBrazil => "pt",
+            other => other.code(),
+        };
+        !languages.is_empty() && languages.iter().all(|language| language == code)
+    }
+}
+/// The stored cycle setting as output languages; unknown codes are skipped.
+pub fn cycle_languages(codes: &[String]) -> Vec<OutputMode> {
+    codes.iter().filter_map(|code| OutputMode::language(code)).collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,9 +369,13 @@ impl SessionState {
         self.mode = OutputMode::Original;
         true
     }
+    /// Sets the language for the next dictation. A dictation still recording
+    /// takes the new language too: it only applies once the recording ends.
     fn change_mode(&mut self, mode: OutputMode, recording: bool) -> Result<()> {
-        if self.active.is_some() || recording {
-            bail!("Finish or cancel the current dictation before changing its language.");
+        match self.active.as_mut() {
+            Some(session) if recording && self.stage == "recording" => session.mode = mode,
+            None if !recording => {}
+            _ => bail!("Finish or cancel the current dictation before changing its language."),
         }
         self.mode = mode;
         Ok(())
@@ -458,7 +534,7 @@ impl TranslationService {
         }
         let settings = storage::get_settings_from_db_path(&self.db_path)?;
         if !settings.translation_enabled {
-            bail!("Enable local translation in Settings → Dictation.");
+            bail!("Turn on Translate while you dictate in Settings → Languages.");
         }
         let (spec, model) = self.selected_model()?;
         if helper_path(&self.app).is_none() {
@@ -485,7 +561,7 @@ impl TranslationService {
             .and_then(model_spec)
             .and_then(installed)
             .or_else(|| MODELS.iter().find_map(installed))
-            .ok_or_else(|| anyhow!("Download the translation model in Settings → Dictation."))
+            .ok_or_else(|| anyhow!("Download the translation model in Settings → Languages."))
     }
     /// Loads the translation model in the background while the user dictates,
     /// when translation is ready and macOS has enough free memory.
@@ -556,19 +632,28 @@ impl TranslationService {
         let _ = self.app.emit("dictation-output-status", self.snapshot());
     }
     pub fn set_mode(&self, mode: OutputMode) -> Result<OutputState> {
-        self.change_mode(Some(mode))
+        self.change_mode(mode)
     }
+    /// Steps to the next language the user picked for the shortcut.
     pub fn cycle(&self) -> Result<OutputState> {
-        self.change_mode(None)
+        self.step_mode(false)
     }
-    /// Steps back through Original → Français → Español (AR).
     pub fn cycle_back(&self) -> Result<OutputState> {
+        self.step_mode(true)
+    }
+    fn step_mode(&self, back: bool) -> Result<OutputState> {
+        let settings = storage::get_settings_from_db_path(&self.db_path)?;
+        let cycle = cycle_languages(&settings.translation_cycle_languages);
         let current = self
             .state
             .lock()
             .map_err(|_| anyhow!("Dictation state unavailable"))?
             .mode;
-        self.change_mode(Some(current.previous()))
+        self.change_mode(if back {
+            current.previous(&cycle)
+        } else {
+            current.next(&cycle)
+        })
     }
     fn is_recording(&self) -> bool {
         self.recording.status().is_ok_and(|s| {
@@ -605,16 +690,16 @@ impl TranslationService {
             self.publish();
         }
     }
-    fn change_mode(&self, requested: Option<OutputMode>) -> Result<OutputState> {
+    fn change_mode(&self, mode: OutputMode) -> Result<OutputState> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow!("Dictation state unavailable"))?;
-        let mode = requested.unwrap_or_else(|| state.mode.next());
         if mode != OutputMode::Original {
             self.ready()?;
         }
         state.change_mode(mode, self.is_recording())?;
+        let listening = state.active.is_some();
         let reset = state.arm_original_reset();
         drop(state);
         self.schedule_original_reset(reset);
@@ -624,8 +709,12 @@ impl TranslationService {
                 self.preload_translation(settings.gpu_enabled);
             }
         }
-        self.shell.set_output_mode(mode);
-        self.shell.flash_mode()?;
+        if listening {
+            self.shell.show_output_mode(mode)?;
+        } else {
+            self.shell.set_output_mode(mode);
+            self.shell.flash_mode()?;
+        }
         self.publish();
         Ok(self.snapshot())
     }
@@ -983,7 +1072,10 @@ impl TranslationService {
             source_languages: original.detected_languages.clone(),
             fallback_to_original: false,
         };
-        if session.mode == OutputMode::Original || original.plain_text.trim().is_empty() {
+        if session.mode == OutputMode::Original
+            || session.mode.already_in(&original.detected_languages)
+            || original.plain_text.trim().is_empty()
+        {
             output.output_text = Some(original.plain_text.clone());
             output.status = "completed".into();
             self.record_output(session, &output);
@@ -1195,7 +1287,7 @@ impl TranslationService {
             hash.update(&buffer[..n]);
         }
         if format!("{:x}", hash.finalize()) != spec.sha256 {
-            bail!("Translation model is damaged. Download it again in Settings → Dictation.");
+            bail!("Translation model is damaged. Download it again in Settings → Languages.");
         }
         let current = path.metadata()?;
         if (current.len(), current.modified()?) != fingerprint {
@@ -1300,16 +1392,37 @@ mod tests {
     use super::*;
     #[test]
     fn output_cycle_and_wire_codes_are_stable() {
-        let mode = OutputMode::default();
-        assert_eq!(mode, OutputMode::Original);
-        assert_eq!(mode.next(), OutputMode::French);
-        assert_eq!(mode.next().next(), OutputMode::SpanishArgentina);
-        assert_eq!(mode.next().next().next(), mode);
-        assert_eq!(
-            serde_json::to_string(&OutputMode::SpanishArgentina).unwrap(),
-            "\"es-AR\""
-        );
-        assert!(serde_json::from_str::<OutputMode>("\"es\"").is_err());
+        use OutputMode::*;
+        let picked = cycle_languages(&["fr".into(), "en".into(), "xx".into(), "es-AR".into()]);
+        assert_eq!(picked, [French, English, SpanishArgentina], "unknown codes are skipped");
+        // The shortcut visits the picked languages in the fixed order, then Original.
+        assert_eq!(Original.next(&picked), English);
+        assert_eq!(English.next(&picked), French);
+        assert_eq!(French.next(&picked), SpanishArgentina);
+        assert_eq!(SpanishArgentina.next(&picked), Original);
+        assert_eq!(Original.previous(&picked), SpanishArgentina);
+        assert_eq!(English.previous(&picked), Original);
+        // From a language chosen on the Dictate screen but not in the cycle.
+        assert_eq!(German.next(&picked), French);
+        assert_eq!(German.previous(&picked), English);
+        assert_eq!(Original.next(&[]), Original);
+        for mode in OUTPUT_LANGUAGES {
+            assert_eq!(OutputMode::language(mode.code()), Some(mode));
+            assert_eq!(serde_json::to_string(&mode).unwrap(), format!("\"{}\"", mode.code()));
+        }
+        assert_eq!(OutputMode::language("original"), None);
+        assert!(serde_json::from_str::<OutputMode>("\"es-ES\"").is_err());
+    }
+    #[test]
+    fn dictation_already_in_the_target_language_is_not_translated() {
+        let langs = |codes: &[&str]| codes.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+        assert!(OutputMode::German.already_in(&langs(&["de"])));
+        assert!(OutputMode::English.already_in(&langs(&["en", "en"])));
+        assert!(!OutputMode::English.already_in(&langs(&["de", "en"])), "mixed speech is translated");
+        assert!(!OutputMode::German.already_in(&[]), "unknown language is translated");
+        assert!(OutputMode::SpanishArgentina.already_in(&langs(&["es"])));
+        assert!(OutputMode::PortugueseBrazil.already_in(&langs(&["pt"])));
+        assert!(!OutputMode::Original.already_in(&langs(&["de"])));
     }
     fn session(id: &str) -> DictationSession {
         DictationSession {
@@ -1345,6 +1458,11 @@ mod tests {
             );
             assert_eq!(state.mode, OutputMode::Original);
         }
+        // While it is still recording, the dictation takes the new language.
+        state.stage = "recording".into();
+        state.change_mode(OutputMode::German, true).unwrap();
+        assert_eq!(state.mode, OutputMode::German);
+        assert_eq!(state.active.as_ref().unwrap().mode, OutputMode::German);
         assert!(state.finish("first"));
         assert!(state.change_mode(OutputMode::French, true).is_err()); // microphone test
         state.change_mode(OutputMode::French, false).unwrap();

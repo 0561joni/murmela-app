@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
-import { describeError } from "../lib/formatting";
+import { describeError, formatCalendarDay } from "../lib/formatting";
 import type { UpdateStatus } from "../types/domain";
 
 function describeStatus(status: UpdateStatus | null): string {
@@ -15,6 +15,10 @@ function describeStatus(status: UpdateStatus | null): string {
       return "Murmela is up to date.";
     case "failed":
       return status.message ?? "Murmela could not check for updates.";
+    case "needs_renewal":
+      return `Murmela ${status.version ?? ""} is out. Your Pro updates ended${
+        status.proUpdatesUntil ? ` on ${formatCalendarDay(status.proUpdatesUntil)}` : ""
+      }, so it isn't downloaded automatically. Renew Pro or upgrade to Lifetime, or install it as Free from the banner.`;
     default:
       return "";
   }

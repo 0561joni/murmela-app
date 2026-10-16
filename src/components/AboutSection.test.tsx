@@ -16,6 +16,7 @@ const upToDate = {
   notes: null,
   message: null,
   lastCheckedMs: 1,
+  proUpdatesUntil: null,
 };
 const aboutProps = { autoUpdateEnabled: true, saving: false, onToggleAutoUpdate: vi.fn() };
 

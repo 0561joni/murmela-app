@@ -7,7 +7,12 @@
 //! "Restart to update"; otherwise the update is installed when Murmela quits.
 //! Nothing is installed while Murmela is running. Each check and download is
 //! logged in Settings → Network activity.
+//!
+//! A Pro key unlocks only releases from its year of updates (see license.rs).
+//! When a newer release would turn Pro off, it isn't downloaded: the status says
+//! so, and the user chooses to renew or to install it anyway as Free.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -33,6 +38,8 @@ pub enum UpdateState {
     Downloading,
     Ready,
     Failed,
+    /// A newer release exists, but this Mac's Pro key doesn't cover it.
+    NeedsRenewal,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -45,6 +52,8 @@ pub struct UpdateStatus {
     pub notes: Option<String>,
     pub message: Option<String>,
     pub last_checked_ms: Option<i64>,
+    /// With `NeedsRenewal`: the last day of the Pro key's update year (YYYY-MM-DD).
+    pub pro_updates_until: Option<String>,
 }
 
 #[derive(Default)]
@@ -54,6 +63,8 @@ pub struct Updates {
     pending: Mutex<Option<(Update, Vec<u8>)>>,
     /// Serialises checks so the timer and a manual check never overlap.
     check_lock: tauri::async_runtime::Mutex<()>,
+    /// The user chose to install a release that Pro doesn't cover, as Free.
+    install_as_free: AtomicBool,
 }
 
 impl Updates {
@@ -102,6 +113,12 @@ fn automatic_checks_enabled(app: &AppHandle) -> bool {
         .is_some_and(|settings| settings.auto_update_enabled)
 }
 
+/// Downloads the release that Pro doesn't cover after the user chose to run it as Free.
+pub async fn download_as_free(app: &AppHandle) -> Result<UpdateStatus> {
+    app.state::<Updates>().install_as_free.store(true, Ordering::SeqCst);
+    check(app).await
+}
+
 /// Looks for a newer release and downloads it. Returns the resulting status;
 /// a failed check is reported in the status rather than as an error.
 pub async fn check(app: &AppHandle) -> Result<UpdateStatus> {
@@ -121,6 +138,7 @@ pub async fn check(app: &AppHandle) -> Result<UpdateStatus> {
                 status.state = UpdateState::UpToDate;
                 status.version = None;
                 status.notes = None;
+                status.pro_updates_until = None;
             }
         }),
         Err(error) => {
@@ -162,10 +180,25 @@ async fn download_newer_release(app: &AppHandle, updates: &Updates) -> Result<bo
     };
     let version = update.version.clone();
     let notes = update.body.clone();
+    let published = update
+        .date
+        .and_then(|date| chrono::DateTime::from_timestamp(date.unix_timestamp(), 0))
+        .map(|date| date.date_naive());
+    let as_free = updates.install_as_free.swap(false, Ordering::SeqCst);
+    if let Some(until) = crate::license::update_ends_pro(&db_path, published).filter(|_| !as_free) {
+        updates.set(app, |status| {
+            status.state = UpdateState::NeedsRenewal;
+            status.version = Some(version.clone());
+            status.notes = notes.clone();
+            status.pro_updates_until = Some(until.to_string());
+        });
+        return Ok(true);
+    }
     updates.set(app, |status| {
         status.state = UpdateState::Downloading;
         status.version = Some(version.clone());
         status.notes = notes.clone();
+        status.pro_updates_until = None;
     });
     let mut connection = network_activity::Connection::begin(
         &db_path,

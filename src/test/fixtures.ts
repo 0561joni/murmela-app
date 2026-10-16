@@ -8,6 +8,7 @@ export const settingsFixture: AppSettings = {
   shortcut: "CmdOrCtrl+Shift+Space",
   translationEnabled: false,
   translationCycleShortcut: "Ctrl+Alt+L",
+  translationCycleLanguages: ["en", "de", "fr", "es-AR"],
   translationModelId: "translategemma-12b-q6-k",
   shortcutMode: "push_to_talk",
   languageMode: "auto",

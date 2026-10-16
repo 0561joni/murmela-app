@@ -62,7 +62,7 @@ const props = () => ({
 });
 beforeEach(() => {
   resetLicenseCache();
-  mocks.license.mockReset().mockResolvedValue({ pro: true, keyHint: "••••4D51", licensedTo: "Ada", activatedAt: "2026-10-14T12:00:00Z" });
+  mocks.license.mockReset().mockResolvedValue({ pro: true, tier: "lifetime", updatesUntil: null, releaseDate: "2026-10-16", keyHint: "••••4D51", licensedTo: "Ada", activatedAt: "2026-10-14T12:00:00Z" });
   document = reviewFixture();
   mocks.get
     .mockReset()
@@ -337,7 +337,7 @@ describe("Shared transcript review", () => {
 
 describe("Speaker identification on the free version", () => {
   it("opens Settings → License instead of starting a job", async () => {
-    mocks.license.mockResolvedValue({ pro: false, keyHint: null, licensedTo: null, activatedAt: null });
+    mocks.license.mockResolvedValue({ pro: false, tier: null, updatesUntil: null, releaseDate: "2026-10-16", keyHint: null, licensedTo: null, activatedAt: null });
     const opened = vi.fn();
     window.addEventListener("murmela:open-license", opened);
     render(<ReviewWorkspace {...props()} />);

@@ -253,7 +253,6 @@ impl GestureSink {
                     let result = match action {
                         Action::StartHold | Action::StartHandsFree => controller.begin_listening(),
                         Action::StopHold | Action::StopHandsFree => controller.finish_dictation(),
-                        Action::CancelHold => controller.cancel_active(),
                         Action::Cycle(arrow) => {
                             let changed = match arrow {
                                 Arrow::Next => controller.translation.cycle(),

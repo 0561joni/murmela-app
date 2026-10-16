@@ -71,6 +71,9 @@ pub struct AppSettings {
     pub shortcut: String,
     pub translation_enabled: bool,
     pub translation_cycle_shortcut: String,
+    /// Output language codes the language shortcut visits after Original.
+    #[serde(default = "default_cycle_languages")]
+    pub translation_cycle_languages: Vec<String>,
     pub translation_model_id: String,
     pub shortcut_mode: ShortcutMode,
     pub language_mode: LanguageMode,
@@ -123,6 +126,9 @@ fn default_live_pair_chunk_ms() -> u32 {
 fn default_true() -> bool {
     true
 }
+pub(crate) fn default_cycle_languages() -> Vec<String> {
+    crate::translation::DEFAULT_CYCLE_LANGUAGES.map(String::from).to_vec()
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +137,7 @@ pub struct SettingsPatch {
     pub shortcut: Option<String>,
     pub translation_enabled: Option<bool>,
     pub translation_cycle_shortcut: Option<String>,
+    pub translation_cycle_languages: Option<Vec<String>>,
     pub translation_model_id: Option<String>,
     pub shortcut_mode: Option<ShortcutMode>,
     pub language_mode: Option<LanguageMode>,

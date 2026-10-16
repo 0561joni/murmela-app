@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  DictationOutputState,
   DictationReadiness,
   DownloadableModel,
   ModelDownloadStatus,
@@ -13,6 +14,10 @@ const api = vi.hoisted(() => ({
   freeSpace: 50_000_000_000 as number | null,
   listener: null as ((status: ModelDownloadStatus) => void) | null,
   startModelDownload: vi.fn(),
+  termsAccepted: false,
+  acceptModelTerms: vi.fn(async () => undefined),
+  outputListener: null as ((state: DictationOutputState) => void) | null,
+  outputState: null as DictationOutputState | null,
 }));
 
 vi.mock("../lib/api", () => ({
@@ -27,6 +32,24 @@ vi.mock("../lib/api", () => ({
   }),
   startModelDownload: api.startModelDownload,
   cancelModelDownload: vi.fn(async () => undefined),
+  getModelTermsStatus: vi.fn(async () => ({ required: true, accepted: api.termsAccepted })),
+  acceptModelTerms: api.acceptModelTerms,
+  getGlobeKeyAction: vi.fn(async () => "do_nothing"),
+  openKeyboardSettings: vi.fn(async () => undefined),
+}));
+
+vi.mock("../lib/textTranslation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/textTranslation")>()),
+  getTranslatorStatus: vi.fn(async () => ({ memoryAvailableBytes: 8e9 })),
+}));
+
+vi.mock("../lib/translationApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/translationApi")>()),
+  getDictationOutputState: vi.fn(async () => api.outputState),
+  listenDictationOutput: vi.fn(async (handler: (state: DictationOutputState) => void) => {
+    api.outputListener = handler;
+    return () => undefined;
+  }),
 }));
 
 function asr(id: string, modelName: string, sizeBytes: number, extra: Partial<DownloadableModel> = {}): DownloadableModel {
@@ -60,6 +83,8 @@ const livePair = asr("live-pair", "Live pair · Nemotron + Parakeet", 1_400_000_
 });
 const qwen = asr("qwen3-asr-1.7b-bf16", "Qwen3-ASR-1.7B", 4_700_000_000);
 const whisper = asr("ggml-large-v3-turbo-q5_0-bin", "ggml-large-v3-turbo-q5_0.bin", 574_000_000);
+const gemma4b = asr("translategemma-4b-q6-k", "TranslateGemma 4B", 3_190_755_840, { capability: "translation" });
+const gemma12b = asr("translategemma-12b-q6-k", "TranslateGemma 12B", 9_660_827_392, { capability: "translation" });
 const moss = asr("moss-transcribe-diarize-0.9b-f16", "MOSS Transcribe + Diarize 0.9B F16", 1_800_000_000);
 
 const readiness: DictationReadiness = {
@@ -101,6 +126,7 @@ function props(overrides: Partial<FirstRunSetupProps> = {}): FirstRunSetupProps 
     onOpenMicrophoneSettings: vi.fn(async () => undefined),
     onResolveAccessibility: vi.fn(async () => undefined),
     onOpenShortcutSettings: vi.fn(async () => undefined),
+    onSaveSettings: vi.fn(async () => undefined),
     onFinish: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -111,6 +137,10 @@ describe("FirstRunSetup", () => {
     api.catalog = [whisper, moss, qwen, livePair];
     api.freeSpace = 50_000_000_000;
     api.listener = null;
+    api.termsAccepted = false;
+    api.acceptModelTerms.mockClear();
+    api.outputListener = null;
+    api.outputState = null;
     api.startModelDownload.mockReset().mockImplementation(async (modelId: string) => ({
       modelId,
       modelName: modelId,
@@ -125,39 +155,18 @@ describe("FirstRunSetup", () => {
     }));
   });
 
-  it("offers only the curated dictation engines, recommended first", async () => {
-    render(<FirstRunSetup {...props()} />);
-    const radios = await screen.findAllByRole("radio");
-    expect(radios.map((radio) => radio.closest("label")?.querySelector("strong")?.textContent)).toEqual([
-      "Live dictation · Experimental",
-      "Qwen",
-      "Whisper Turbo Compact",
-    ]);
-    await waitFor(() => expect((radios[0] as HTMLInputElement).checked).toBe(true));
-    expect(screen.getByText("Works for: Shortcut")).toBeTruthy();
-  });
-
-  it("disables engines that do not fit on the disk and preselects one that does", async () => {
-    api.freeSpace = 3_000_000_000;
-    render(<FirstRunSetup {...props()} />);
-    const radios = (await screen.findAllByRole("radio")) as HTMLInputElement[];
-    expect(radios[1].disabled).toBe(true);
-    await waitFor(() => expect(radios[0].checked).toBe(true));
-    expect(screen.getByText(/Not enough free disk space/)).toBeTruthy();
-  });
-
-  it("downloads the chosen engine and makes it the shortcut model once installed", async () => {
+  it("downloads the recommended engine without asking and uses it once installed", async () => {
     const current = props();
     render(<FirstRunSetup {...current} />);
-    const radios = await screen.findAllByRole("radio");
-    fireEvent.click(radios[2]);
-    fireEvent.click(screen.getByRole("button", { name: "Download and continue" }));
-    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(whisper.id));
-    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: "Dictation engine" })).toBeNull();
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(livePair.id));
+    expect(api.startModelDownload).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/Downloading Live dictation/)).toBeTruthy();
     expect(current.onUseModel).not.toHaveBeenCalled();
     api.listener?.({
-      modelId: whisper.id,
-      modelName: whisper.modelName,
+      modelId: livePair.id,
+      modelName: livePair.modelName,
       state: "completed",
       downloadedBytes: 1,
       totalBytes: 1,
@@ -167,23 +176,37 @@ describe("FirstRunSetup", () => {
       artifactIndex: null,
       artifactCount: 1,
     });
-    await waitFor(() => expect(current.onUseModel).toHaveBeenCalledWith(whisper.id));
+    await waitFor(() => expect(current.onUseModel).toHaveBeenCalledWith(livePair.id));
+  });
+
+  it("falls back to a smaller engine when the recommended one does not fit", async () => {
+    api.freeSpace = 2_000_000_000;
+    render(<FirstRunSetup {...props()} />);
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(whisper.id));
   });
 
   it("uses an installed engine without downloading", async () => {
-    api.catalog = [{ ...qwen, installed: true }, whisper];
+    api.catalog = [{ ...qwen, installed: true }, whisper, livePair];
     const current = props();
     render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Use this engine" }));
     await waitFor(() => expect(current.onUseModel).toHaveBeenCalledWith(qwen.id));
     expect(api.startModelDownload).not.toHaveBeenCalled();
+  });
+
+  it("keeps the current engine when dictation already works", async () => {
+    const current = props({ readiness: { ...readiness, shortcutModelReady: true } });
+    render(<FirstRunSetup {...current} />);
+    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.startModelDownload).not.toHaveBeenCalled();
+    expect(current.onUseModel).not.toHaveBeenCalled();
   });
 
   it("asks for the microphone and pasting permissions", async () => {
     api.catalog = [{ ...qwen, installed: true }];
     const current = props();
     render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Use this engine" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
     fireEvent.click(await screen.findByRole("button", { name: "Allow microphone" }));
     expect(current.onRequestMicrophone).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Allow pasting" }));
@@ -197,9 +220,9 @@ describe("FirstRunSetup", () => {
       quickStatus: quick({ lastTranscriptId: "old", lastTranscriptText: "Old words", state: "inserted" }),
     });
     const { rerender } = render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Use this engine" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
-    expect(await screen.findByText(/hold/)).toBeTruthy();
+    expect(await screen.findByText(/^Hold/)).toBeTruthy();
     expect(screen.getByText("⌘+⇧+Space")).toBeTruthy();
     expect(screen.queryByText(/Old words/)).toBeNull();
     rerender(
@@ -211,6 +234,96 @@ describe("FirstRunSetup", () => {
     expect(await screen.findByText("It works! Murmela heard: “Hello Murmela”")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start talking" }));
     await waitFor(() => expect(current.onFinish).toHaveBeenCalled());
+  });
+
+  it("asks which languages to translate into and downloads the engine after the Gemma terms", async () => {
+    api.catalog = [{ ...qwen, installed: true }, gemma4b, gemma12b];
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: "Translation engine" })).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Français" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Deutsch" }));
+    // 8 GB free: the compact engine is recommended and preselected.
+    const engines = await screen.findByRole("radiogroup", { name: "Translation engine" });
+    expect(engines.textContent).toContain("Recommended for this Mac");
+    await waitFor(() => {
+      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.map((radio) => radio.checked)).toEqual([true, false]);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Download and continue" }));
+    await waitFor(() => expect(current.onSaveSettings).toHaveBeenCalledWith({ translationCycleLanguages: ["de", "fr"] }));
+    // Not yet accepted: the terms come first, then the download.
+    fireEvent.click(await screen.findByRole("checkbox", { name: /I agree/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Agree and download/ }));
+    await waitFor(() => expect(api.acceptModelTerms).toHaveBeenCalledWith(gemma4b.id));
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(gemma4b.id));
+    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+  });
+
+  it("saves the languages for later where no translation engine is available", async () => {
+    api.catalog = [{ ...qwen, installed: true }];
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Polski" }));
+    expect(screen.getByText(/needs an Apple Silicon Mac/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(current.onSaveSettings).toHaveBeenCalledWith({ translationCycleLanguages: ["pl"] }));
+    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+    expect(api.startModelDownload).not.toHaveBeenCalled();
+  });
+
+  it("turns translation on at once when its engine is already installed", async () => {
+    api.catalog = [{ ...qwen, installed: true }, { ...gemma12b, installed: true }];
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await waitFor(() =>
+      expect(current.onSaveSettings).toHaveBeenCalledWith({ translationEnabled: true, translationModelId: gemma12b.id }),
+    );
+    expect(api.startModelDownload).not.toHaveBeenCalled();
+  });
+
+  it("ticks off the practice steps as the user dictates and switches language", async () => {
+    api.catalog = [{ ...qwen, installed: true }];
+    api.outputState = { outputMode: "original", busy: false, stage: "idle", statusText: "", ready: true, errorMessage: null, lastOutput: null };
+    const current = props({
+      settings: { translationEnabled: true, shortcut: "Fn" } as FirstRunSetupProps["settings"],
+      readiness: { ...readiness, shortcutModelReady: true, microphone: "granted" },
+      quickStatus: quick({ registeredShortcut: "Fn" }),
+    });
+    const { rerender } = render(<FirstRunSetup {...current} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    const practice = await screen.findByRole("list", { name: "Practice" });
+    const items = () => Array.from(practice.querySelectorAll("li")).map((item) => item.className);
+    expect(items()).toEqual(["is-active", "", ""]);
+    rerender(<FirstRunSetup {...current} quickStatus={quick({ registeredShortcut: "Fn", state: "listening" })} />);
+    await waitFor(() => expect(items()).toEqual(["is-done", "is-active", ""]));
+    rerender(
+      <FirstRunSetup
+        {...current}
+        quickStatus={quick({ registeredShortcut: "Fn", state: "inserted", lastTranscriptId: "t1", lastTranscriptText: "Hallo" })}
+      />,
+    );
+    await waitFor(() => expect(items()).toEqual(["is-done", "is-done", "is-active"]));
+    // The paste did not reach the box, so the words are put there directly.
+    expect((screen.getByRole("textbox", { name: "Try dictation here" }) as HTMLTextAreaElement).value).toBe("Hallo");
+    // A second later the status returns to idle; the step stays done.
+    rerender(
+      <FirstRunSetup
+        {...current}
+        quickStatus={quick({ registeredShortcut: "Fn", state: "idle", lastTranscriptId: "t1", lastTranscriptText: "Hallo" })}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(items()).toEqual(["is-done", "is-done", "is-active"]);
+    expect(practice.textContent).toContain("Now: Original");
+    await waitFor(() => expect(api.outputListener).not.toBeNull());
+    api.outputListener?.({ ...api.outputState!, outputMode: "en" });
+    await waitFor(() => expect(items()).toEqual(["is-done", "is-done", "is-done"]));
+    expect(practice.textContent).toContain("Now: English");
   });
 
   it("can be skipped at any step", async () => {

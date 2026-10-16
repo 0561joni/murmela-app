@@ -43,6 +43,7 @@ const mockSettings: AppSettings = {
   shortcut: "Fn",
   translationEnabled: false,
   translationCycleShortcut: "Ctrl+Alt+L",
+  translationCycleLanguages: ["en", "de", "fr", "es-AR"],
   translationModelId: "translategemma-12b-q6-k",
   shortcutMode: "push_to_talk",
   languageMode: "auto",
@@ -130,7 +131,7 @@ const mockDownloadableModels: DownloadableModel[] = [
     id: "live-pair",
     engine: "fluidaudio-live-pair",
     modelName: "Live pair · Nemotron + Parakeet",
-    description: "Experimental shortcut dictation with live text while you speak.",
+    description: "Shortcut dictation with live text while you speak.",
     sizeBytes: 1_381_000_000,
     profile: "fast",
     availability: "available",
@@ -684,11 +685,26 @@ export async function getModelTermsStatus(modelId: string): Promise<ModelTermsSt
   return invoke<ModelTermsStatus>("model_terms_status", { modelId });
 }
 
-/** Browser preview only: `?pro` shows the app as if a Pro license were active. */
-let mockLicense: LicenseStatus =
-  typeof window !== "undefined" && new URLSearchParams(window.location.search).has("pro")
-    ? { pro: true, keyHint: "••••4D51", licensedTo: "Ada Lovelace", activatedAt: "2026-10-14T12:00:00Z" }
-    : { pro: false, keyHint: null, licensedTo: null, activatedAt: null };
+const mockFreeLicense: LicenseStatus = {
+  pro: false,
+  tier: null,
+  updatesUntil: null,
+  releaseDate: "2026-10-16",
+  keyHint: null,
+  licensedTo: null,
+  activatedAt: null,
+};
+
+/** Browser preview only: `?pro` shows the app as if a Pro license were active, `?lifetime` a Lifetime
+ * license, and `?pro-ended` a Pro license whose update year ended before this version. */
+let mockLicense: LicenseStatus = (() => {
+  const query = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const key = { keyHint: "••••4D51", licensedTo: "Ada Lovelace", activatedAt: "2026-10-14T12:00:00Z" };
+  if (query.has("lifetime")) return { ...mockFreeLicense, ...key, pro: true, tier: "lifetime" };
+  if (query.has("pro")) return { ...mockFreeLicense, ...key, pro: true, tier: "pro", updatesUntil: "2027-10-14" };
+  if (query.has("pro-ended")) return { ...mockFreeLicense, ...key, tier: "pro", updatesUntil: "2026-09-30" };
+  return mockFreeLicense;
+})();
 
 export async function getLicenseStatus(): Promise<LicenseStatus> {
   if (!isTauriRuntime()) return mockLicense;
@@ -699,7 +715,15 @@ export async function activateLicense(licenseKey: string): Promise<LicenseStatus
   if (!isTauriRuntime()) {
     const key = licenseKey.trim();
     if (!key) throw new Error("Paste the license key from your receipt email.");
-    mockLicense = { pro: true, keyHint: `••••${key.slice(-4).toUpperCase()}`, licensedTo: "Preview buyer", activatedAt: new Date().toISOString() };
+    mockLicense = {
+      ...mockFreeLicense,
+      pro: true,
+      tier: "pro",
+      updatesUntil: "2027-10-16",
+      keyHint: `••••${key.slice(-4).toUpperCase()}`,
+      licensedTo: "Preview buyer",
+      activatedAt: new Date().toISOString(),
+    };
     return mockLicense;
   }
   return invoke<LicenseStatus>("activate_license", { licenseKey });
@@ -707,7 +731,7 @@ export async function activateLicense(licenseKey: string): Promise<LicenseStatus
 
 export async function deactivateLicense(): Promise<LicenseStatus> {
   if (!isTauriRuntime()) {
-    mockLicense = { pro: false, keyHint: null, licensedTo: null, activatedAt: null };
+    mockLicense = mockFreeLicense;
     return mockLicense;
   }
   return invoke<LicenseStatus>("deactivate_license");
@@ -1461,6 +1485,19 @@ export async function getNetworkActivity(): Promise<NetworkActivity> {
   return invoke<NetworkActivity>("get_network_activity");
 }
 
+/** Saves the log as a text file where the user chooses. Returns the path, or null when canceled. */
+export async function exportNetworkActivity(fileName: string, contents: string): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([contents], { type: "text/plain" }));
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    return fileName;
+  }
+  return invoke<string | null>("export_network_activity", { fileName, contents });
+}
+
 export async function clearNetworkActivity(): Promise<void> {
   if (!isTauriRuntime()) {
     mockNetworkEntries = [];
@@ -1668,16 +1705,20 @@ export async function requestAccessibilityAccess(): Promise<void> {
   return invoke<void>("request_accessibility_access");
 }
 
-// Browser previews: `?update-ready` shows a downloaded release.
+// Browser previews: `?update-ready` shows a downloaded release, `?update-renewal` a release
+// that the Pro key doesn't cover.
 const mockUpdateStatus = (): UpdateStatus => {
-  const ready = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("update-ready");
+  const query = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const ready = query.has("update-ready");
+  const renewal = query.has("update-renewal");
   return {
-    state: ready ? "ready" : "up_to_date",
+    state: ready ? "ready" : renewal ? "needs_renewal" : "up_to_date",
     currentVersion: "1.0.0",
-    version: ready ? "0.2.0" : null,
-    notes: ready ? "Faster live dictation and a clearer permissions setup." : null,
+    version: ready || renewal ? "0.2.0" : null,
+    notes: ready || renewal ? "Faster live dictation and a clearer permissions setup." : null,
     message: null,
     lastCheckedMs: Date.now(),
+    proUpdatesUntil: renewal ? "2027-10-14" : null,
   };
 };
 
@@ -1690,6 +1731,12 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 export async function checkForUpdates(): Promise<UpdateStatus> {
   if (!isTauriRuntime()) return mockUpdateStatus();
   return invoke<UpdateStatus>("check_for_updates");
+}
+
+/** Downloads a release that the Pro key doesn't cover; it will run as Free. */
+export async function downloadUpdateAsFree(): Promise<UpdateStatus> {
+  if (!isTauriRuntime()) return { ...mockUpdateStatus(), state: "ready", proUpdatesUntil: null };
+  return invoke<UpdateStatus>("download_update_as_free");
 }
 
 export async function installUpdateAndRestart(): Promise<void> {

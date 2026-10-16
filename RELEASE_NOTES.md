@@ -1,5 +1,15 @@
 # Release notes
 
+## Murmela 1.1.1: dictate into nine languages, and Pro for $19
+
+- Translate while you dictate now covers all nine languages: English, German, French, Spanish, Argentinian Spanish, Italian, Brazilian Portuguese, Dutch and Polish. Choose the ones the language shortcut switches between in the new Settings → Languages.
+- Hold 🌐 and press → or ← to switch language, at any pace. Keep holding and speak: the dictation comes out in the new language. If you already speak the chosen language, your words are pasted unchanged.
+- The welcome setup asks which languages you want to translate into, downloads the recommended engine by itself and lets you practise the 🌐 key. Run it again any time from Settings → General.
+- Live dictation is no longer experimental.
+- The network activity log stays compact and can be exported as a text file.
+- New: Murmela Pro for $19, with a year of updates. The version you have keeps Pro for good after that year. Lifetime stays $49 for the first 500 founders, and existing keys stay Lifetime.
+- Fixed: the language shortcut did nothing while "Translate while you dictate" was off, without saying so. Settings now says so.
+
 ## Murmela 1.1: calls and meetings
 
 - A new look for macOS 26: Liquid Glass sidebar, buttons, menus and dialogs, with Apple's system colours and San Francisco type. With Reduce Transparency on, Murmela uses solid surfaces.
