@@ -9,6 +9,8 @@ import { OverlayWaveform } from "./components/OverlayWaveform";
 import { splitLiveTranscript } from "./lib/liveTranscript";
 import { usePlayful } from "./lib/appearance";
 import { LISTENING_LINES, PROCESSING_LINES, pickLine } from "./lib/murmelmeter";
+import { Mela } from "./components/Mela";
+import { melaFlag, overlayMood, useMelaEnabled } from "./lib/mela";
 
 /** How long the playful listening line stays before the pill shrinks to the waveform. */
 const PLAYFUL_LINE_MS = 2200;
@@ -68,7 +70,7 @@ export function OverlayApp() {
     if (element.scrollTo) element.scrollTo({ left: element.scrollWidth, behavior });
     else element.scrollLeft = element.scrollWidth;
   }, [displayedText, status.sessionId]);
-  // Browser preview only: overlay.html?preview=listening|processing|streaming|inserted|failed
+  // Browser preview only: overlay.html?preview=listening|processing|streaming|inserted|failed|mela (add &mela=on to show Mela)
   useEffect(() => {
     if ("__TAURI_INTERNALS__" in window) return;
     const preview = new URLSearchParams(window.location.search).get("preview");
@@ -79,7 +81,9 @@ export function OverlayApp() {
       const speech = Math.max(0, Math.sin(t * 2.3) * 0.6 + Math.sin(t * 5.1) * 0.25 + 0.25);
       const base = { revision: Math.round(t * 10), sessionId: "preview", audioLevel: speech };
       setStatus(
-        preview === "streaming"
+        preview === "mela"
+          ? melaPreviewStep(t % MELA_PREVIEW_SECONDS, base)
+          : preview === "streaming"
           ? { ...base, phase: "listening", streamingState: "listening", statusText: "Listening", liveText: "Murmela turns speech into text", tentativeText: " on this Mac" }
           : preview === "processing"
             ? { ...base, phase: "processing" }
@@ -198,6 +202,9 @@ export function OverlayApp() {
 
   const tone =
     phase === "failed" ? "error" : phase === "clipboard_only" ? "copied" : phase === "notice" ? "notice" : phase === "inserted" ? "success" : null;
+  const mela = useMelaEnabled() && playful;
+  const melaMood = overlayMood(latest.phase);
+
   const stateClass = streaming ? "is-streaming" : result ? "is-result" : phase === "processing" ? "is-processing" : phase === "mode" ? "is-mode" : "is-listening";
 
   return (
@@ -207,7 +214,7 @@ export function OverlayApp() {
     >
       <div
         ref={pill}
-        className={`overlay-capsule ${stateClass}${tone ? ` tone-${tone}` : ""}${entering ? " is-entering" : ""}`}
+        className={`overlay-capsule ${stateClass}${tone ? ` tone-${tone}` : ""}${entering ? " is-entering" : ""}${mela ? " has-mela" : ""}`}
         role="group"
         aria-label="Dictation overlay"
         style={width ? { width: width + "px" } : undefined}
@@ -265,7 +272,32 @@ export function OverlayApp() {
           )}
         </div>
         </div>
+        {mela ? (
+          <Mela
+            place="pill"
+            mood={melaMood === "hidden" ? "idle" : melaMood}
+            away={melaMood === "hidden"}
+            level={listening ? level : 0}
+            flag={melaFlag(outputMode)}
+          />
+        ) : null}
       </div>
     </div>
   );
+}
+
+/** One loop of `overlay.html?preview=mela`: dictate, switch language twice, finish, then fail once. */
+const MELA_PREVIEW_SECONDS = 21;
+function melaPreviewStep(t: number, base: Pick<OverlayPayload, "revision" | "sessionId" | "audioLevel">): OverlayPayload {
+  const at = (phase: OverlayPhase, outputMode: OutputMode = "original", extra: Partial<OverlayPayload> = {}) => ({ ...base, phase, outputMode, ...extra });
+  if (t < 0.6) return at("hidden");
+  if (t < 4.6) return at("listening");
+  if (t < 6.6) return at("mode", "de");
+  if (t < 8.6) return at("mode", "es-AR");
+  if (t < 11.6) return at("listening", "es-AR");
+  if (t < 13.8) return at("processing", "es-AR");
+  if (t < 15.6) return at("inserted", "es-AR", { statusText: "Pasted · Español (Argentina)" });
+  if (t < 16.8) return at("hidden", "es-AR");
+  if (t < 19.6) return at("failed", "original", { statusText: "No microphone found · check Settings" });
+  return at("hidden");
 }

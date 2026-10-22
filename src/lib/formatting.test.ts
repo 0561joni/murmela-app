@@ -61,6 +61,8 @@ describe("describeError", () => {
       "No speech engine is set up for this yet. Choose one in Settings → Engines.",
     );
     expect(readableError("LIVE_PAIR_PROTOCOL: Unordered helper response.")).toMatch(/^Live dictation stopped unexpectedly/);
+    expect(readableError("MODEL_WORKER_FAILED: [METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).")).toMatch(/^Your Mac ran out of memory/);
+    expect(readableError("MODEL_OUT_OF_MEMORY: VibeVoice-ASR ran out of memory (signal: 9 (SIGKILL))")).toMatch(/^Your Mac ran out of memory/);
     expect(readableError("recording worker timed out")).toMatch(/^The microphone didn't respond/);
     expect(readableError("LIVE_PAIR_SETUP: Live dictation requires Apple Silicon and macOS 14 or newer.")).toBe(
       "Live dictation requires Apple Silicon and macOS 14 or newer.",

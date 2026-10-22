@@ -1059,6 +1059,11 @@ export async function prepareDroppedAudioFiles(
   return invoke<SelectedSourceFile[]>("prepare_dropped_audio_files", { paths });
 }
 
+/** Browser preview only: `?slow-files` stretches the mock job so a file visibly works for ~8 s. */
+function mockFileDelayFactor() {
+  return new URLSearchParams(window.location.search).has("slow-files") ? 7 : 1;
+}
+
 export async function startFileTranscription(
   request: FileTranscriptionRequest,
 ): Promise<StartFileTranscriptionResponse> {
@@ -1177,7 +1182,7 @@ export async function startFileTranscription(
           startedAtMs: Date.now(),
           updatedAtMs: Date.now(),
         });
-      }, 120);
+      }, 120 * mockFileDelayFactor());
       window.setTimeout(() => {
         emitMockFileTranscriptionStatus({
           jobId,
@@ -1193,7 +1198,7 @@ export async function startFileTranscription(
           startedAtMs: Date.now(),
           updatedAtMs: Date.now(),
         });
-      }, 420);
+      }, 420 * mockFileDelayFactor());
       window.setTimeout(() => {
         emitMockFileTranscriptionStatus({
           jobId,
@@ -1209,7 +1214,7 @@ export async function startFileTranscription(
           startedAtMs: Date.now(),
           updatedAtMs: Date.now(),
         });
-      }, 920);
+      }, 920 * mockFileDelayFactor());
       window.setTimeout(() => {
         emitMockFileTranscriptionStatus({
           jobId,
@@ -1225,7 +1230,7 @@ export async function startFileTranscription(
           startedAtMs: Date.now(),
           updatedAtMs: Date.now(),
         });
-      }, 1200);
+      }, 1200 * mockFileDelayFactor());
     });
     return { jobId };
   }
@@ -1772,6 +1777,111 @@ export async function listenQuickDictateStatus(
       handler(event.payload);
     },
   );
+}
+
+/** What a dictation started from the app's window reports while it runs. */
+export type AppDictationUpdate =
+  /** Everything heard so far, the still-changing end included. */
+  | { kind: "live"; text: string }
+  | { kind: "finishing" }
+  /** The final text; null when nothing was heard or the dictation was canceled. */
+  | { kind: "done"; text: string | null }
+  | { kind: "failed"; message: string };
+
+export interface AppDictation {
+  finish: () => Promise<void>;
+  dispose: () => void;
+}
+
+const MOCK_APP_DICTATION =
+  "Hallo zusammen, ich komme morgen etwas später, weil mein Zug ausfällt. Fangt bitte ohne mich an.";
+
+/**
+ * Starts the shortcut dictation (live pair, or the chosen batch model) from the
+ * app itself: the text streams into `onUpdate` instead of being pasted.
+ */
+export async function startAppDictation(
+  onUpdate: (update: AppDictationUpdate) => void,
+): Promise<AppDictation> {
+  if (!isTauriRuntime()) {
+    let heard = 0;
+    let ended = false;
+    const words = MOCK_APP_DICTATION.split(" ");
+    const timer = window.setInterval(() => {
+      if (heard < words.length) heard += 1;
+      onUpdate({ kind: "live", text: words.slice(0, heard).join(" ") });
+    }, 320);
+    return {
+      finish: async () => {
+        window.clearInterval(timer);
+        onUpdate({ kind: "finishing" });
+        window.setTimeout(() => {
+          if (ended) return;
+          ended = true;
+          onUpdate({ kind: "done", text: heard ? words.slice(0, heard).join(" ") : null });
+        }, 400);
+      },
+      dispose: () => {
+        ended = true;
+        window.clearInterval(timer);
+      },
+    };
+  }
+
+  const { listen } = await import("@tauri-apps/api/event");
+  let sessionId: string | null = null;
+  let finishing = false;
+  let ended = false;
+  type OverlayText = { sessionId?: string | null; liveText?: string; tentativeText?: string };
+  // Live text can arrive before the start command returns the session id.
+  let early = null as OverlayText | null;
+  const unlisteners: (() => void)[] = [];
+  const dispose = () => {
+    ended = true;
+    unlisteners.splice(0).forEach((unlisten) => unlisten());
+  };
+  const end = (update: AppDictationUpdate) => {
+    if (ended) return;
+    dispose();
+    onUpdate(update);
+  };
+  const showLive = (payload: OverlayText) => {
+    if (payload.liveText === undefined && payload.tentativeText === undefined) return;
+    onUpdate({ kind: "live", text: (payload.liveText ?? "") + (payload.tentativeText ?? "") });
+  };
+  unlisteners.push(
+    await listen<OverlayText & { phase: string }>(
+      "quick-dictation-overlay",
+      ({ payload }) => {
+        if (ended || (payload.phase !== "listening" && payload.phase !== "processing")) return;
+        if (sessionId === null) early = payload;
+        else if (payload.sessionId === sessionId) showLive(payload);
+      },
+    ),
+    await listen<QuickDictationStatusResponse>("quick-dictate-status", ({ payload }) => {
+      if (ended || sessionId === null) return;
+      if (payload.state === "processing" && !finishing) {
+        finishing = true;
+        onUpdate({ kind: "finishing" });
+      } else if (payload.state === "error") {
+        end({ kind: "failed", message: payload.lastErrorMessage ?? "Dictation failed." });
+      } else if (payload.state === "idle") {
+        // Idle straight from listening means the dictation was canceled (Esc).
+        end({ kind: "done", text: finishing ? payload.lastTranscriptText : null });
+      }
+    }),
+  );
+  try {
+    sessionId = await invoke<string>("start_app_dictation");
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+  if (early?.sessionId === sessionId) showLive(early);
+  return {
+    finish: () => invoke<void>("finish_app_dictation"),
+    dispose,
+  };
 }
 
 export async function listenFileTranscriptionStatus(

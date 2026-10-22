@@ -1666,9 +1666,9 @@ summary {
 }
 .queue-item-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 220px auto;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 200px) auto;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-2) var(--space-4);
 }
 .queue-item-copy {
   display: grid;
@@ -1704,10 +1704,12 @@ summary {
 }
 .queue-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1);
-  min-width: 340px;
+  grid-row: 1;
+  grid-column: 3;
 }
 .queue-actions:empty {
   display: none;
@@ -1715,15 +1717,39 @@ summary {
 .queue-item-note {
   font: var(--text-small);
 }
-@media (max-width: 760px) {
+/* Why a file failed, across the whole row so it reads as a sentence. */
+.queue-item-problem {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+  font: var(--text-small);
+}
+.queue-item-problem svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--color-error);
+}
+.queue-item-problem p {
+  margin: 0;
+}
+.queue-item-problem p + p {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+}
+/* The window's narrow sizes: status beside the name, actions on their own line. */
+@media (max-width: 980px) {
   .queue-item-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
   .queue-actions {
+    grid-row: auto;
     grid-column: 1 / -1;
     justify-content: flex-start;
-    flex-wrap: wrap;
-    min-width: 0;
   }
 }
 .status-pill {
@@ -2923,6 +2949,26 @@ summary {
   flex: 1;
   display: grid;
   gap: 3px;
+  min-width: 0;
+}
+.toast-copy strong,
+.toast-copy p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The text opens what the notification is about; "Show" says so. */
+.toast-open {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.toast-chip .toast-action {
+  flex: none;
 }
 .toast-copy strong {
   font-size: 13px;
@@ -3955,6 +4001,47 @@ html.overlay-window body {
   margin-left: var(--space-1);
   font: 11px/1 var(--font-mono);
   opacity: 0.8;
+}
+/* Dictating into the source box: the mic ripples like the record orb. */
+.translate-mic {
+  flex: none;
+  border-radius: 50%;
+}
+/* At the pane's left edge the tooltip opens rightwards so it stays inside. */
+.translate-mic .icon-button-tooltip {
+  left: 0;
+  transform: none;
+}
+.translate-mic.is-listening::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--brand-blue) 55%, transparent);
+  pointer-events: none;
+  animation: orb-ripple 1.8s var(--ease-out) infinite;
+}
+.translate-mic-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--color-text-2);
+}
+.translate-mic-status::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-live);
+  animation: live-dot 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .translate-mic.is-listening::after,
+  .translate-mic-status::before {
+    animation: none;
+  }
 }
 .translate-placeholder {
   font: var(--text-reading);

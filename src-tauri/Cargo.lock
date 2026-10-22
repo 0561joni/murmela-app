@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "murmela"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "block2",

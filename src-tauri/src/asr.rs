@@ -357,7 +357,12 @@ impl TranscriptionEngine for LocalTranscriptionEngine {
             "moss-transcribe-cpp" | "vibevoice-mlx" => {
                 self.whisper.invalidate_context_cache();
                 self.qwen.invalidate_context_cache();
-                crate::native_asr::transcribe_with_native_worker(&model, &request, progress)
+                crate::native_asr::transcribe_with_native_worker(
+                    &model,
+                    &request,
+                    progress,
+                    &self.models_dir,
+                )
             }
             engine => Err(anyhow!(
                 "MODEL_ENGINE_UNSUPPORTED: unsupported engine '{engine}'"

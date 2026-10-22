@@ -17,6 +17,7 @@ pub mod managed_process;
 pub mod model_downloads;
 pub mod model_metadata;
 pub mod native_asr;
+pub mod native_chunks;
 pub mod network_activity;
 pub mod output_format;
 pub mod permissions;

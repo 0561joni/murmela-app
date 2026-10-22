@@ -50,6 +50,7 @@ import {
   startRecordingSession,
   suspendShortcutCapture,
 } from "../lib/api";
+import { setMelaEnabled, useMelaEnabled } from "../lib/mela";
 import type {
   AppSettings,
   DownloadableModel,
@@ -109,6 +110,7 @@ export function SettingsScreen({
   onReloadModelState,
   onRunWelcomeSetup,
 }: SettingsScreenProps) {
+  const melaEnabled = useMelaEnabled();
   const [group, setGroup] = useState(initialSection);
   // The app can switch sections from outside, e.g. a Pro hint opening License.
   useEffect(() => setGroup(initialSection), [initialSection]);
@@ -1917,6 +1919,30 @@ export function SettingsScreen({
                 <span className="setting-state">{settings.seriousMode ? "On" : "Off"}</span>
               </div>
               {fieldFeedback("seriousMode")}
+            </div>
+            <div className="setting-row">
+              <div className="setting-copy">
+                <p className="setting-title">Mela</p>
+                <p className="muted">
+                  A small glass marmot that reacts to what Murmela is doing, in the dictation pill and in this window.
+                  She is drawn inside the app, never sees your words and looks away when your notes are open.
+                </p>
+              </div>
+              <div className="setting-control">
+                <button
+                  disabled={settings.seriousMode}
+                  aria-label="Mela"
+                  type="button"
+                  className={melaEnabled && !settings.seriousMode ? "switch-button is-on" : "switch-button"}
+                  aria-pressed={melaEnabled && !settings.seriousMode}
+                  onClick={() => setMelaEnabled(!melaEnabled)}
+                >
+                  <span className="switch-thumb" />
+                </button>
+                <span className="setting-state">
+                  {settings.seriousMode ? "Off in Serious mode" : melaEnabled ? "On" : "Off"}
+                </span>
+              </div>
             </div>
             <div className="setting-row">
               <div className="setting-copy">

@@ -58,6 +58,8 @@ import { FirstRunSetup } from "./screens/FirstRunSetup";
 import { FilesScreen, isFileWorking } from "./screens/FilesScreen";
 import { MeetingsScreen } from "./screens/MeetingsScreen";
 import { applyAppearance, usePlayful } from "./lib/appearance";
+import { Mela } from "./components/Mela";
+import { useMelaEnabled, useMelaWindowMood } from "./lib/mela";
 import { crossedMilestone } from "./lib/murmelmeter";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { HistoryScreen } from "./screens/HistoryScreen";
@@ -70,6 +72,7 @@ import { useUpdateStatus } from "./hooks/useUpdateStatus";
 import { activateFromLink, useLicense } from "./hooks/useLicense";
 import { onOpenLicenseSettings } from "./components/ProHint";
 import { AppIcon, IconButton, type AppIconName } from "./components/IconButton";
+import { Button } from "./components/Feedback";
 import { describeError, PASTE_SHORTCUT, readableError } from "./lib/formatting";
 import { useAccessibilityReadinessPolling } from "./hooks/useAccessibilityReadinessPolling";
 import type {
@@ -101,6 +104,8 @@ interface Toast {
   message: string;
   hint?: string;
   durationMs: number;
+  /** The screen that shows what this notification is about. */
+  screen?: ScreenId;
 }
 
 const TERMINAL_DICTATION_STATES = new Set([
@@ -403,6 +408,7 @@ export function App() {
   useEffect(() => {
     currentScreenRef.current = screen;
     mainRef.current?.scrollTo?.({ top: 0 });
+    setToasts((current) => current.filter((toast) => toast.screen !== screen));
     if (screen === "history") setLibraryVisited(true);
     if (screen === "translate") setTranslateVisited(true);
     if (screen !== "files") {
@@ -544,10 +550,11 @@ export function App() {
           kind: event.stage === "failed" ? "error" : "success",
           message:
             event.stage === "failed"
-              ? "File needs attention"
+              ? "Transcription failed"
               : "Transcript ready",
           hint: event.sourceFile.originalName,
           durationMs: event.stage === "failed" ? 0 : 4000,
+          screen: "files",
         });
       }
       setFileQueueItems((current) => mergeFileStatusIntoQueue(current, event));
@@ -631,6 +638,22 @@ export function App() {
   const hasActiveFiles = fileQueueItems.some((item) =>
     isFileWorking(item.stage),
   );
+  const mela = useMelaEnabled() && playful;
+  const melaWindow = useMelaWindowMood({
+    enabled: mela,
+    dictation:
+      recordingStatus?.state === "listening" || quickDictationStatus?.state === "listening"
+        ? "listening"
+        : manualTranscriptionState.stage === "processing" || quickDictationStatus?.state === "processing"
+          ? "processing"
+          : null,
+    // She looks away whenever saved words are on screen.
+    showingContent: screen === "history" || Boolean(reviewTarget),
+    translating: Boolean(outputState?.busy),
+    filesWorking: hasActiveFiles,
+    outputMode: outputState?.outputMode,
+    failed: Boolean(dictationError),
+  });
   useEffect(() => {
     if (!hasActiveFiles) return;
     const interval = window.setInterval(() => {
@@ -1331,7 +1354,7 @@ export function App() {
 
   return (
     <div className="app-scene">
-      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} onOpen={setScreen} />
       {firstRunOpen ? (
         <FirstRunSetup
           settings={settings}
@@ -1433,7 +1456,8 @@ export function App() {
           </nav>
         </aside>
 
-        <main className="main-content" ref={mainRef}>
+        <main className={"main-content" + (mela ? " has-mela" : "")} ref={mainRef}>
+          {mela ? <Mela place="window" mood={melaWindow.mood} flag={melaWindow.flag} /> : null}
           <div className="content-frame">
             <UpdateBanner status={updateStatus} />
             <ProBanner hidden={screen === "settings" && settingsSection === "license"} />
@@ -1674,15 +1698,17 @@ export function App() {
 function ToastStack({
   toasts,
   onDismiss,
+  onOpen,
 }: {
   toasts: Toast[];
   onDismiss: (id: number) => void;
+  onOpen: (screen: ScreenId) => void;
 }) {
   if (toasts.length === 0) return null;
   return (
     <div role="region" aria-label="Notifications" className="toast-stack">
       {toasts.map((toast) => (
-        <ToastChip key={toast.id} toast={toast} onDismiss={onDismiss} />
+        <ToastChip key={toast.id} toast={toast} onDismiss={onDismiss} onOpen={onOpen} />
       ))}
     </div>
   );
@@ -1691,10 +1717,19 @@ function ToastStack({
 function ToastChip({
   toast,
   onDismiss,
+  onOpen,
 }: {
   toast: Toast;
   onDismiss: (id: number) => void;
+  onOpen: (screen: ScreenId) => void;
 }) {
+  const target = toast.screen;
+  const copy = (
+    <>
+      <strong>{toast.message}</strong>
+      {toast.hint ? <p>{toast.hint}</p> : null}
+    </>
+  );
   return (
     <div
       role={toast.kind === "error" ? "alert" : "status"}
@@ -1709,10 +1744,18 @@ function ToastChip({
               : "info"
         }
       />
-      <div className="toast-copy">
-        <strong>{toast.message}</strong>
-        {toast.hint ? <p>{toast.hint}</p> : null}
-      </div>
+      {target ? (
+        <>
+          <button type="button" className="toast-copy toast-open" onClick={() => onOpen(target)}>
+            {copy}
+          </button>
+          <Button variant="ghost" className="toast-action" onClick={() => onOpen(target)}>
+            Show
+          </Button>
+        </>
+      ) : (
+        <div className="toast-copy">{copy}</div>
+      )}
       <IconButton
         icon="xmark"
         size="compact"

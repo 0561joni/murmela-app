@@ -113,6 +113,7 @@ const ERROR_COPY: Record<string, string> = {
   MODEL_AUDIO_TOO_LONG: "This recording is too long for the chosen engine. Pick another file engine in Settings → Engines.",
   MODEL_DOWNLOAD_CANCELED: "Download canceled.",
   MODEL_TERMS_REQUIRED: "Accept the Gemma Terms of Use first, then start the download again.",
+  MODEL_OUT_OF_MEMORY: "Your Mac ran out of memory. This engine needs a lot of it for long recordings. Close other apps and try again, or choose another file engine in Settings → Engines.",
   MODEL_WORKER_FAILED: "The speech engine stopped unexpectedly. Try again; if it keeps happening, restart Murmela.",
   QWEN_INFERENCE_FAILED: "The speech engine stopped unexpectedly. Try again; if it keeps happening, restart Murmela.",
   LIVE_PAIR_WORKER_FAILED: "Live dictation stopped unexpectedly. Try again; if it keeps happening, restart Murmela.",
@@ -164,6 +165,8 @@ export function readableError(message: string): string {
   // outer lowercase code first.
   const outer = /^[a-z][a-z0-9_]*:\s+([\s\S]+)$/.exec(text);
   if (outer) return readableError(outer[1]);
+  // Engines report a full GPU memory under their generic failure code.
+  if (/insufficient memory|out ?of ?memory|metal::malloc/i.test(text)) return ERROR_COPY.MODEL_OUT_OF_MEMORY;
   const coded = /^([A-Z][A-Z0-9_]*[A-Z0-9]):\s*([\s\S]*)$/.exec(text);
   if (coded && ERROR_COPY[coded[1]]) return ERROR_COPY[coded[1]];
   for (const [pattern, copy] of MESSAGE_COPY) {

@@ -155,6 +155,19 @@ async fn retry_streaming_dictation(state: tauri::State<'_, AppState>) -> Result<
     tauri::async_runtime::spawn_blocking(move || controller.retry_streaming().map_err(|e| e.to_string()))
         .await.map_err(|e| e.to_string())?
 }
+/// Dictation into the app's own window (the Translate screen's microphone).
+#[tauri::command]
+async fn start_app_dictation(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let controller = state.dictation_controller.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.start_in_app().map_err(|e| e.to_string()))
+        .await.map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn finish_app_dictation(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let controller = state.dictation_controller.clone();
+    tauri::async_runtime::spawn_blocking(move || controller.finish_in_app().map_err(|e| e.to_string()))
+        .await.map_err(|e| e.to_string())?
+}
 #[tauri::command]
 async fn retry_dictation_translation(
     state: tauri::State<'_, AppState>,
@@ -1737,6 +1750,8 @@ fn main() {
             set_dictation_output_mode,
             retry_dictation_translation,
             retry_streaming_dictation,
+            start_app_dictation,
+            finish_app_dictation,
             get_settings,
             update_settings,
             list_transcripts,

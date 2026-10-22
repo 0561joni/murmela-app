@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -13,7 +13,7 @@ use crate::diarization::{
     DiarizationSource, DiarizationStatus, DiarizationTurn, TranscriptSpeaker,
 };
 use crate::speaker_reconciliation::SpeakerAttribution;
-use crate::{audio_preprocess, model_metadata};
+use crate::{audio_preprocess, model_metadata, native_chunks};
 
 pub const WORKER_PROTOCOL_VERSION: u32 = 1;
 
@@ -74,6 +74,7 @@ pub fn transcribe_with_native_worker(
     model: &crate::asr::InstalledModel,
     request: &crate::asr::FileTranscriptionRequest,
     progress: Option<Arc<AtomicI32>>,
+    models_dir: &Path,
 ) -> anyhow::Result<TranscriptResult> {
     let prepared = audio_preprocess::decode_audio_file(Path::new(&request.file_path))?;
     let duration_ms = prepared.samples.len() as i64 * 1_000 / prepared.sample_rate_hz as i64;
@@ -87,16 +88,113 @@ pub fn transcribe_with_native_worker(
         }
     }
 
+    let report = |percent: i32| {
+        if let Some(progress) = &progress {
+            progress.fetch_max(percent.clamp(0, 100), Ordering::Relaxed);
+        }
+    };
+    let chunk_ms = native_chunks::chunk_length_ms(crate::memory_pressure::installed_bytes());
+    let output = if model.id == model_metadata::VIBEVOICE_MODEL_ID && duration_ms > chunk_ms {
+        transcribe_in_chunks(model, request, &prepared, duration_ms, chunk_ms, models_dir, &report)?
+    } else {
+        run_worker_on(model, request, &prepared, &report)?
+    };
+    Ok(normalize_native_result(&model.id, &model.model_name, duration_ms, output))
+}
+
+fn run_worker_on(
+    model: &crate::asr::InstalledModel,
+    request: &crate::asr::FileTranscriptionRequest,
+    audio: &audio_preprocess::PreparedAudio,
+    report: &dyn Fn(i32),
+) -> anyhow::Result<NativeWorkerResult> {
     // Always hand the worker the audio Murmela already decoded. The Python
     // runtimes cannot open video containers (MP4/MOV/MKV/…) or every audio
     // codec Murmela accepts, so passing the original file would fail there.
     let path = std::env::temp_dir().join(format!("murmela-worker-{}.wav", Uuid::new_v4()));
     let temporary_wav = TemporaryAudio(path.clone());
-    audio_preprocess::write_wav(&path, &prepared)?;
-
-    let result = run_worker_process(model, request, &path, progress, duration_ms);
+    audio_preprocess::write_wav(&path, audio)?;
+    let result = run_worker_process(model, request, &path, report);
     drop(temporary_wav);
     result
+}
+
+/// VibeVoice keeps the whole recording in memory, so a long one is
+/// transcribed in overlapping chunks, one worker process each (the worker
+/// then returns all of its memory), and stitched with matched speakers.
+fn transcribe_in_chunks(
+    model: &crate::asr::InstalledModel,
+    request: &crate::asr::FileTranscriptionRequest,
+    prepared: &audio_preprocess::PreparedAudio,
+    duration_ms: i64,
+    chunk_ms: i64,
+    models_dir: &Path,
+    report: &dyn Fn(i32),
+) -> anyhow::Result<NativeWorkerResult> {
+    let rate = prepared.sample_rate_hz;
+    let spans = native_chunks::plan_chunks(duration_ms, chunk_ms, |at| {
+        native_chunks::loudness(&prepared.samples, rate, at)
+    });
+    let count = spans.len() as i32;
+    // Leave the last few percent for matching speakers.
+    let share = 95 / count;
+    let mut transcripts = Vec::with_capacity(spans.len());
+    for (index, span) in spans.iter().enumerate() {
+        let from = (span.start_ms * rate as i64 / 1_000) as usize;
+        let to = ((span.end_ms * rate as i64 / 1_000) as usize).min(prepared.samples.len());
+        let audio = audio_preprocess::PreparedAudio {
+            sample_rate_hz: rate,
+            channels: prepared.channels,
+            samples: prepared.samples[from..to].to_vec(),
+        };
+        let base = index as i32 * share;
+        let result = run_worker_on(model, request, &audio, &|percent| report(base + percent * share / 100))?;
+        transcripts.push(native_chunks::ChunkTranscript { span: *span, result });
+    }
+
+    let embedder = crate::model_downloads::installed_diarization_package_path(models_dir)
+        .and_then(|package| native_chunks::VoiceEmbedder::load(&package));
+    let voices: Vec<native_chunks::ChunkVoices> = match &embedder {
+        Some(embedder) => transcripts
+            .iter()
+            .map(|chunk| {
+                let segments: Vec<NativeOutputSegment> = chunk
+                    .result
+                    .segments
+                    .iter()
+                    .map(|segment| NativeOutputSegment {
+                        start_ms: chunk.span.start_ms + segment.start_ms,
+                        end_ms: chunk.span.start_ms + segment.end_ms,
+                        speaker: segment.speaker.as_deref().map(str::trim).map(str::to_string),
+                        ..segment.clone()
+                    })
+                    .collect();
+                let mut labels: Vec<String> = segments.iter().filter_map(|s| s.speaker.clone()).collect();
+                labels.sort();
+                labels.dedup();
+                labels
+                    .into_iter()
+                    .filter_map(|label| {
+                        let ranges = native_chunks::voice_sample_ranges(&segments, &label);
+                        let voice = embedder.embed(&prepared.samples, rate, &ranges)?;
+                        Some((label, voice))
+                    })
+                    .collect()
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let (result, stitched) = native_chunks::stitch(transcripts, &voices);
+    eprintln!(
+        "{} chunks of up to {} min; {} speakers; voices {}; matches {:?}",
+        count,
+        chunk_ms / 60_000,
+        stitched.speakers,
+        if embedder.is_some() { "used" } else { "unavailable" },
+        stitched.matches
+    );
+    report(100);
+    Ok(result)
 }
 
 struct TemporaryAudio(PathBuf);
@@ -111,9 +209,8 @@ fn run_worker_process(
     model: &crate::asr::InstalledModel,
     request: &crate::asr::FileTranscriptionRequest,
     audio_path: &Path,
-    progress: Option<Arc<AtomicI32>>,
-    duration_ms: i64,
-) -> anyhow::Result<TranscriptResult> {
+    report: &dyn Fn(i32),
+) -> anyhow::Result<NativeWorkerResult> {
     let worker = resolve_worker(&model.id).ok_or_else(|| {
         anyhow::anyhow!(
             "MODEL_RUNTIME_MISSING: the verified {} inference worker is not bundled",
@@ -172,10 +269,20 @@ fn run_worker_process(
             )
         })?;
     let mut child = crate::managed_process::ManagedChild::new(child);
-    // Drain diagnostics to avoid blocking a verbose model process on stderr.
+    // Drain diagnostics to avoid blocking a verbose model process on stderr,
+    // keeping the last lines to explain an exit without a result.
+    let stderr_tail = Arc::new(Mutex::new(Vec::<String>::new()));
     if let Some(stderr) = child.stderr.take() {
+        let tail = stderr_tail.clone();
         std::thread::spawn(move || {
-            let _ = std::io::copy(&mut std::io::BufReader::new(stderr), &mut std::io::sink());
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut tail) = tail.lock() {
+                    if tail.len() == STDERR_TAIL_LINES {
+                        tail.remove(0);
+                    }
+                    tail.push(line);
+                }
+            }
         });
     }
     if let Some(mut stdin) = child.stdin.take() {
@@ -204,22 +311,14 @@ fn run_worker_process(
         };
         match parse_worker_record(&line)? {
             NativeWorkerRecord::Progress { progress_percent }
-            | NativeWorkerRecord::Heartbeat { progress_percent } => {
-                if let Some(progress) = &progress {
-                    progress.fetch_max(progress_percent.clamp(0, 100), Ordering::Relaxed);
-                }
-            }
+            | NativeWorkerRecord::Heartbeat { progress_percent } => report(progress_percent),
             NativeWorkerRecord::Result { result: output } => {
-                result = Some(normalize_native_result(
-                    &model.id,
-                    &model.model_name,
-                    duration_ms,
-                    output,
-                ));
+                result = Some(output);
                 break;
             }
             NativeWorkerRecord::Error { code, message } => {
                 let _ = child.kill();
+                let code = if is_out_of_memory(&message) { OUT_OF_MEMORY } else { code.as_str() };
                 anyhow::bail!("{code}: {message}");
             }
             NativeWorkerRecord::Canceled => {
@@ -235,12 +334,45 @@ fn run_worker_process(
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
-    result.ok_or_else(|| {
-        anyhow::anyhow!(
-            "MODEL_WORKER_FAILED: {} exited with {status} without a result",
-            model.model_name
-        )
-    })
+    if let Some(result) = result {
+        return Ok(result);
+    }
+    // Give the drain thread a moment to read what the worker wrote last.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let tail = stderr_tail.lock().map(|tail| tail.join("\n")).unwrap_or_default();
+    Err(exit_without_result(&model.model_name, &status, &tail))
+}
+
+const OUT_OF_MEMORY: &str = "MODEL_OUT_OF_MEMORY";
+const STDERR_TAIL_LINES: usize = 20;
+
+/// Metal and MLX report a full GPU working set in their own words, not as a
+/// Python `MemoryError`.
+fn is_out_of_memory(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    ["insufficient memory", "outofmemory", "out of memory", "metal::malloc", "memoryerror"]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+fn exit_without_result(
+    model_name: &str,
+    status: &std::process::ExitStatus,
+    stderr_tail: &str,
+) -> anyhow::Error {
+    use std::os::unix::process::ExitStatusExt;
+    // macOS ends a process with SIGKILL when memory runs out.
+    if status.signal() == Some(9) || is_out_of_memory(stderr_tail) {
+        return anyhow::anyhow!("{OUT_OF_MEMORY}: {model_name} ran out of memory ({status})");
+    }
+    let last = stderr_tail.lines().rev().find(|line| !line.trim().is_empty());
+    match last {
+        Some(line) => anyhow::anyhow!(
+            "MODEL_WORKER_FAILED: {model_name} exited with {status} without a result: {}",
+            line.trim()
+        ),
+        None => anyhow::anyhow!("MODEL_WORKER_FAILED: {model_name} exited with {status} without a result"),
+    }
 }
 
 /// How a native model worker is started.
@@ -553,6 +685,56 @@ pub fn normalize_native_result(
 
 #[cfg(test)]
 mod tests {
+    /// Transcribes a real long recording with the installed VibeVoice model:
+    /// `MURMELA_LONG_FILE=/path/to/audio.m4a cargo test --release --lib long_recording -- --ignored --nocapture`.
+    /// Writes the transcript to `MURMELA_LONG_OUT` (default: the temp folder).
+    #[test]
+    #[ignore]
+    fn long_recording_is_transcribed_in_chunks() {
+        let file = std::env::var("MURMELA_LONG_FILE").expect("set MURMELA_LONG_FILE");
+        let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Library/Application Support/com.murmela.app/models");
+        let model = crate::model_downloads::discover_native_asr_models(&models_dir)
+            .into_iter()
+            .find(|model| model.id == super::model_metadata::VIBEVOICE_MODEL_ID)
+            .expect("VibeVoice is not installed");
+        let request = crate::asr::FileTranscriptionRequest {
+            use_context: None,
+            profile: crate::settings::ModelProfile::Accurate,
+            selected_model_id: Some(model.id.clone()),
+            language_mode: crate::settings::LanguageMode::Auto,
+            fixed_language: None,
+            timestamps: true,
+            prefer_gpu: true,
+            file_path: file.clone(),
+            context_prompt: None,
+            context_terms: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let result = super::transcribe_with_native_worker(&model, &request, None, &models_dir).unwrap();
+        eprintln!("done in {:?}; {} speakers; {} segments", started.elapsed(), result.speakers.len(), result.segments.len());
+        let out = std::env::var("MURMELA_LONG_OUT")
+            .unwrap_or_else(|_| std::env::temp_dir().join("murmela-long.json").display().to_string());
+        std::fs::write(out, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn metal_out_of_memory_is_reported_as_out_of_memory() {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(super::is_out_of_memory(
+            "[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)."
+        ));
+        assert!(!super::is_out_of_memory("No module named mlx_audio"));
+        let killed = std::process::ExitStatus::from_raw(9);
+        assert!(super::exit_without_result("VibeVoice", &killed, "")
+            .to_string()
+            .starts_with("MODEL_OUT_OF_MEMORY:"));
+        let crashed = std::process::ExitStatus::from_raw(1 << 8);
+        let message = super::exit_without_result("VibeVoice", &crashed, "Traceback\nValueError: bad audio\n").to_string();
+        assert!(message.starts_with("MODEL_WORKER_FAILED:"));
+        assert!(message.ends_with("ValueError: bad audio"));
+    }
+
     use super::*;
 
     #[test]

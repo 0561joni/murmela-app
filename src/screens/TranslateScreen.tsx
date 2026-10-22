@@ -12,7 +12,9 @@ import {
   getModelTermsStatus,
   listDownloadableModels,
   listenModelDownloadStatus,
+  startAppDictation,
   startModelDownload,
+  type AppDictation,
 } from "../lib/api";
 import { describeError, formatBytes, readableError } from "../lib/formatting";
 import { isProRequiredError, useLicense } from "../hooks/useLicense";
@@ -174,6 +176,11 @@ export function TranslateScreen(props: TranslateScreenProps) {
   const wordEditRef = useRef<WordEdit | null>(null);
   wordEditRef.current = wordEdit;
   const [, setTick] = useState(0);
+  const [dictation, setDictation] = useState<"off" | "starting" | "listening" | "finishing">("off");
+  const dictationRef = useRef<AppDictation | null>(null);
+  // The text that was in the box when dictation started; spoken words follow it.
+  const dictationBase = useRef({ text: "", prefix: "" });
+  const dictating = dictation !== "off";
 
   const failed = useRef(new Map<string, string>());
   const jobRef = useRef<{ requestId: string; keys: Map<number, string>; pending: Set<string> } | null>(null);
@@ -211,6 +218,15 @@ export function TranslateScreen(props: TranslateScreenProps) {
       unlisten?.();
     };
   }, [refreshStatus]);
+
+  // This screen stays mounted while hidden, so pick up a model chosen in Settings meanwhile.
+  const selectedModelId = props.settings?.translationModelId;
+  useEffect(() => {
+    setModelOverride(null);
+    setMemoryWarning(null);
+    setAllowLowMemory(false);
+    void refreshStatus();
+  }, [selectedModelId, refreshStatus]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -286,7 +302,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
   const anyOutput = outputs.some((value) => value !== null);
   const outputText = useMemo(() => joinPieces(segmented, outputs), [segmented, outputs]);
   const modelId = modelOverride ?? status?.modelId ?? null;
-  const modelName = models.find((model) => model.id === (usedModelId ?? modelId))?.modelName ?? status?.modelName ?? "TranslateGemma";
+  const modelName = models.find((model) => model.id === modelId)?.modelName ?? status?.modelName ?? "TranslateGemma";
   const ready = Boolean(status?.supported && status.modelId);
 
   const run = useCallback(
@@ -359,10 +375,59 @@ export function TranslateScreen(props: TranslateScreenProps) {
   runRef.current = run;
 
   useEffect(() => {
-    if (!live) return;
+    // Dictated text is translated once it is final, like typed text after a pause.
+    if (!live || dictating) return;
     const timer = window.setTimeout(() => void runRef.current(false), 650);
     return () => window.clearTimeout(timer);
-  }, [live, sourceText, requestSource, target, tone, ready, allowLowMemory, modelOverride]);
+  }, [live, dictating, sourceText, requestSource, target, tone, ready, allowLowMemory, modelOverride]);
+
+  useEffect(() => () => dictationRef.current?.dispose(), []);
+
+  async function toggleDictation() {
+    if (dictation === "listening") {
+      setDictation("finishing");
+      try {
+        await dictationRef.current?.finish();
+      } catch (reason) {
+        dictationRef.current?.dispose();
+        dictationRef.current = null;
+        setDictation("off");
+        setError(describeError(reason, "Could not stop dictating."));
+      }
+      return;
+    }
+    if (dictation !== "off") return;
+    const text = sourceText;
+    dictationBase.current = { text, prefix: text === "" || /\s$/.test(text) ? text : `${text} ` };
+    setDictation("starting");
+    setError(null);
+    try {
+      dictationRef.current = await startAppDictation((update) => {
+        const base = dictationBase.current;
+        if (update.kind === "live") {
+          setSourceText(base.prefix + update.text);
+        } else if (update.kind === "finishing") {
+          setDictation("finishing");
+          return;
+        } else {
+          dictationRef.current = null;
+          setDictation("off");
+          if (update.kind === "failed") {
+            // Whatever streamed in stays, so the words are not lost.
+            setError(describeError(update.message, "Dictation failed."));
+          } else {
+            setSourceText(update.text?.trim() ? base.prefix + update.text.trim() : base.text);
+          }
+          window.requestAnimationFrame(() => sourceRef.current?.focus());
+        }
+        setSavedToLibrary(false);
+      });
+      setDictation((current) => (current === "starting" ? "listening" : current));
+    } catch (reason) {
+      setDictation("off");
+      setError(describeError(reason, "Could not start dictating."));
+    }
+  }
 
   // Keep the Library entry current once the whole text is translated.
   useEffect(() => {
@@ -643,7 +708,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
       <PageHeader title="Translate" description="Type, paste or open a text. It is translated on this Mac and never leaves it.">
         {ready ? (
           <Button variant="ghost" title="Change the translation engine in Settings → Languages" onClick={props.onOpenSettings}>
-            <span role="status">{modelName} · {status?.loaded || usedModelId ? "ready" : "loads on first use"}</span>
+            <span role="status">{modelName} · {status?.loaded || (usedModelId !== null && usedModelId === modelId) ? "ready" : "loads on first use"}</span>
           </Button>
         ) : null}
       </PageHeader>
@@ -794,8 +859,9 @@ export function TranslateScreen(props: TranslateScreenProps) {
                 if (backdropRef.current) backdropRef.current.scrollTop = event.currentTarget.scrollTop;
               }}
               aria-label="Text to translate"
-              placeholder="Type or paste text…"
+              placeholder={dictating ? "Listening…" : "Type or paste text…"}
               value={sourceText}
+              readOnly={dictating}
               spellCheck
               onChange={(event) => {
                 setSourceText(event.target.value);
@@ -811,7 +877,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
                 }
               }}
             />
-            {!sourceText ? (
+            {!sourceText && !dictating ? (
               <div className={"translate-drop-hint" + (props.dragging ? " is-dragging" : "")}>
                 <AppIcon name="upload" />
                 <p>
@@ -822,14 +888,30 @@ export function TranslateScreen(props: TranslateScreenProps) {
             ) : null}
           </div>
           <div className="translate-pane-foot">
-            <span className="muted">
-              {documentInfo.fileName ? `${documentInfo.fileName} · ` : ""}
-              {characterCount.toLocaleString()} characters{paragraphCount > 1 ? ` · ${paragraphCount} paragraphs` : ""}
-            </span>
+            <IconButton
+              icon={dictating ? "microphoneActive" : "microphone"}
+              label={dictation === "listening" ? "Stop dictating" : dictation === "off" ? "Dictate" : dictation === "starting" ? "Starting…" : "Finishing…"}
+              size="compact"
+              state={dictation === "listening" ? "selected" : dictation === "off" ? "default" : "busy"}
+              className={"translate-mic" + (dictation === "listening" ? " is-listening" : "")}
+              aria-pressed={dictation === "listening"}
+              disabled={dictation === "starting" || dictation === "finishing"}
+              onClick={() => void toggleDictation()}
+            />
+            {dictating ? (
+              <span className="translate-mic-status" role="status">
+                {dictation === "starting" ? "Starting the microphone…" : dictation === "listening" ? "Listening · click the microphone to stop" : "Finishing…"}
+              </span>
+            ) : (
+              <span className="muted">
+                {documentInfo.fileName ? `${documentInfo.fileName} · ` : ""}
+                {characterCount.toLocaleString()} characters{paragraphCount > 1 ? ` · ${paragraphCount} paragraphs` : ""}
+              </span>
+            )}
             <span className="translate-pane-actions">
-              <Button variant="ghost" icon="folder" onClick={() => void openFile()}>Open file…</Button>
+              <Button variant="ghost" icon="folder" disabled={dictating} onClick={() => void openFile()}>Open file…</Button>
               <span className="translate-library-menu">
-                <Button variant="ghost" icon="library" aria-expanded={libraryMenuOpen} disabled={props.transcripts.length === 0} onClick={() => setLibraryMenuOpen((open) => !open)}>
+                <Button variant="ghost" icon="library" aria-expanded={libraryMenuOpen} disabled={props.transcripts.length === 0 || dictating} onClick={() => setLibraryMenuOpen((open) => !open)}>
                   From Library
                 </Button>
                 {libraryMenuOpen ? (
@@ -852,7 +934,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
                   </ul>
                 ) : null}
               </span>
-              {sourceText ? <Button variant="ghost" icon="xmark" onClick={clear}>Clear</Button> : null}
+              {sourceText ? <Button variant="ghost" icon="xmark" disabled={dictating} onClick={clear}>Clear</Button> : null}
             </span>
           </div>
         </div>

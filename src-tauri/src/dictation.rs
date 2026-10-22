@@ -228,6 +228,9 @@ pub struct QuickDictationController {
     key_tap: Arc<Mutex<Option<crate::key_gesture::tap::KeyTap>>>,
     /// Whether key + → / ← switches the output language (translation is on).
     language_combo: Arc<AtomicBool>,
+    /// The current dictation was started from the app's own window (the
+    /// Translate screen's microphone): its text stays in the app, unpasted.
+    in_app: Arc<AtomicBool>,
 }
 
 /// Runs one-key gestures in order on a worker thread, off the event tap.
@@ -379,6 +382,7 @@ impl QuickDictationController {
             state_since_ms: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             key_tap: Default::default(),
             language_combo: Default::default(),
+            in_app: Default::default(),
         }
     }
 
@@ -633,6 +637,25 @@ impl QuickDictationController {
     }
 
     fn begin_listening(&self) -> Result<()> {
+        self.begin_listening_as(false)
+    }
+
+    /// Starts a dictation from the app's own window. The text streams to the
+    /// overlay as usual and ends in `last_transcript_text` instead of being
+    /// pasted. Returns the session id the overlay events carry.
+    pub fn start_in_app(&self) -> Result<String> {
+        if self.status().state == QuickDictationState::Listening {
+            return Err(anyhow!("A dictation is already running."));
+        }
+        self.begin_listening_as(true)?;
+        Ok(self.translation.current()?.id)
+    }
+
+    pub fn finish_in_app(&self) -> Result<()> {
+        self.finish_dictation()
+    }
+
+    fn begin_listening_as(&self, in_app: bool) -> Result<()> {
         let _work = crate::shutdown::begin_work(true)?;
         match self.status().state {
             QuickDictationState::Listening => return Ok(()),
@@ -656,6 +679,10 @@ impl QuickDictationController {
         }
 
         let mut session = self.translation.begin()?;
+        if in_app {
+            // The app's text box takes the words as spoken; it translates them itself.
+            session.mode = crate::translation::OutputMode::Original;
+        }
         let generation = {
             let _status = self
                 .status
@@ -708,8 +735,9 @@ impl QuickDictationController {
         }
 
         if let Ok(mut paste_target) = self.paste_target.lock() {
-            *paste_target = detect_frontmost_paste_target();
+            *paste_target = if in_app { None } else { detect_frontmost_paste_target() };
         }
+        self.in_app.store(in_app, Ordering::SeqCst);
 
         let capture = match self.recording_controller.start() {
             Ok(capture) => capture,
@@ -915,6 +943,7 @@ impl QuickDictationController {
         if self.poller_generation.load(Ordering::SeqCst) != generation {
             return Ok(());
         }
+        let in_app = self.in_app.load(Ordering::SeqCst);
         let recording = match self.recording_controller.stop_owned(
             session
                 .recording_id
@@ -1133,6 +1162,33 @@ impl QuickDictationController {
             *last = Some(output_text.clone());
         }
         self.translation.ensure_active(&session)?;
+        if in_app {
+            // The app shows the text itself (and keeps it in its own Library
+            // entry): nothing to paste, save or flash.
+            self.translation.with_active(&session, || {
+                self.desktop_shell
+                    .set_overlay_payload(DictationOverlayPayload::default())?;
+                self.update_status(|status| {
+                    status.state = QuickDictationState::Idle;
+                    status.last_transcript_text = Some(output_text.clone());
+                    status.last_transcript_id = None;
+                    status.last_recording_path = Some(recording.file_path.clone());
+                    status.last_error_message = None;
+                    status.last_model_name = resolved_model_name.clone();
+                    status.last_insert_outcome = None;
+                    status.last_insert_warning = fallback_warning.clone();
+                    status.last_duration_ms = Some(recording.duration_ms);
+                })
+            })?;
+            crate::sound::notify(
+                &self.app,
+                crate::sound::FeedbackCue::Complete,
+                &format!("dictation:{}", recording.file_path),
+            );
+            self.refresh_tray_recents();
+            record_dictation_stats(&self.app, &self.db_path, &output_text, recording.duration_ms);
+            return Ok(());
+        }
         if !translated && session.save_history {
             saved_transcript_id = self
                 .translation

@@ -1,5 +1,13 @@
 # Release notes
 
+## Murmela 1.2: Mela, and dictation in Translate
+
+- Meet Mela, an optional little glass marmot. She peeks over the dictation pill and in the corner of the window, and follows what Murmela is doing: her ears rise while the microphone is on, she holds up the flag of a new target language, and she covers her eyes whenever your notes are on screen. She is off until you switch her on in Settings → Appearance & feedback, and Serious mode keeps her away.
+- Translate: press the microphone in the source box to dictate the text you want translated. Your words appear as you speak and are translated when you stop.
+- VibeVoice transcribes long recordings in parts, so a 40-minute file no longer runs the Mac out of memory, and each speaker keeps the same label across the whole file.
+- When a file transcription fails, Murmela now says why, for example when the Mac ran out of memory, and the notification opens the file list.
+- Fixed: the Translate screen showed the engine used last instead of the one chosen in Settings.
+
 ## Murmela 1.1.1: dictate into nine languages, and Pro for $19
 
 - Translate while you dictate now covers all nine languages: English, German, French, Spanish, Argentinian Spanish, Italian, Brazilian Portuguese, Dutch and Polish. Choose the ones the language shortcut switches between in the new Settings → Languages.

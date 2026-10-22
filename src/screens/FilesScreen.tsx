@@ -185,11 +185,6 @@ export function FilesScreen(props: Props) {
                           : ""}
                         {working && hasText && saved ? <> · <span>Saved to Library</span></> : null}
                       </span>
-                      {item.stage === "failed" && item.errorMessage ? (
-                        <p className="error-text queue-item-note" role="alert">
-                          {readableError(item.errorMessage)}
-                        </p>
-                      ) : null}
                       {item.stage === "canceled" ? (
                         <p className="muted queue-item-note">
                           Canceled. Retry when you’re ready.
@@ -217,6 +212,12 @@ export function FilesScreen(props: Props) {
                         </>
                       ) : null}
                     </div>
+                    {item.stage === "failed" && item.errorMessage ? (
+                      <div className="queue-item-problem" role="alert">
+                        <AppIcon name="info" />
+                        <p>{readableError(item.errorMessage)}</p>
+                      </div>
+                    ) : null}
                     <div className="queue-actions">
                       {working ? (
                         <ActionButton

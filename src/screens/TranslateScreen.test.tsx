@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TextTranslationEvent, TextTranslationRequest, TranslatorStatus } from "../lib/textTranslation";
 import type { AppSettings } from "../types/domain";
+import type { AppDictationUpdate } from "../lib/api";
 
 const mocks = vi.hoisted(() => ({
   listener: null as null | ((event: TextTranslationEvent) => void),
@@ -10,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   saveTextTranslation: vi.fn(),
   cancelTextTranslation: vi.fn(),
   copyTextToClipboard: vi.fn(),
+  dictationUpdate: null as null | ((update: AppDictationUpdate) => void),
+  startAppDictation: vi.fn(),
+  finishAppDictation: vi.fn(),
 }));
 
 vi.mock("../lib/textTranslation", async () => {
@@ -35,6 +39,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     copyTextToClipboard: mocks.copyTextToClipboard,
+    startAppDictation: mocks.startAppDictation,
     listDownloadableModels: vi.fn(async () => [
       { id: "translategemma-12b-q6-k", engine: "llama.cpp-translation", modelName: "TranslateGemma 12B", description: "", sizeBytes: 9_660_827_392, profile: "accurate", availability: "available", availabilityReason: null, installed: false, requirements: "16 GB", artifactCount: 1, capability: "translation" },
       { id: "translategemma-4b-q6-k", engine: "llama.cpp-translation", modelName: "TranslateGemma 4B", description: "", sizeBytes: 3_190_755_840, profile: "fast", availability: "available", availabilityReason: null, installed: false, requirements: "8 GB", artifactCount: 1, capability: "translation" },
@@ -92,6 +97,52 @@ describe("TranslateScreen", () => {
     mocks.saveTextTranslation.mockReset().mockResolvedValue(null);
     mocks.cancelTextTranslation.mockReset().mockResolvedValue(undefined);
     mocks.copyTextToClipboard.mockReset().mockResolvedValue(undefined);
+    mocks.dictationUpdate = null;
+    mocks.finishAppDictation.mockReset().mockResolvedValue(undefined);
+    mocks.startAppDictation.mockReset().mockImplementation(async (onUpdate: (update: AppDictationUpdate) => void) => {
+      mocks.dictationUpdate = onUpdate;
+      return { finish: mocks.finishAppDictation, dispose: () => {} };
+    });
+  });
+
+  it("dictates into the text box and translates the final text", async () => {
+    renderScreen();
+    await screen.findByText(/TranslateGemma 12B · ready/);
+    type("Hallo und danke.");
+    await screen.findByText("EN:Hallo und danke.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    const stop = await screen.findByRole("button", { name: "Stop dictating" });
+    expect(stop.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Listening · click the microphone to stop")).toBeTruthy();
+    const box = screen.getByLabelText("Text to translate") as HTMLTextAreaElement;
+    expect(box.readOnly).toBe(true);
+
+    act(() => mocks.dictationUpdate?.({ kind: "live", text: "Wir sehen" }));
+    expect(box.value).toBe("Hallo und danke. Wir sehen");
+    act(() => mocks.dictationUpdate?.({ kind: "live", text: "Wir sehen uns und danke" }));
+    expect(box.value).toBe("Hallo und danke. Wir sehen uns und danke");
+    // Nothing is translated while the words are still changing.
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(mocks.translateText).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(stop);
+    await waitFor(() => expect(mocks.finishAppDictation).toHaveBeenCalled());
+    act(() => mocks.dictationUpdate?.({ kind: "finishing" }));
+    act(() => mocks.dictationUpdate?.({ kind: "done", text: "Wir sehen uns, und danke." }));
+    expect(box.value).toBe("Hallo und danke. Wir sehen uns, und danke.");
+    expect(box.readOnly).toBe(false);
+    await screen.findByText("EN:Hallo und danke. Wir sehen uns, und danke.");
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
+  });
+
+  it("explains why dictation could not start", async () => {
+    mocks.startAppDictation.mockRejectedValueOnce("No default microphone is available");
+    renderScreen();
+    await screen.findByText(/TranslateGemma 12B · ready/);
+    fireEvent.click(screen.getByRole("button", { name: "Dictate" }));
+    await screen.findByText("No microphone found. Connect one, or choose it in Settings → Dictation.");
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeTruthy();
   });
 
   it("translates while typing, paragraph by paragraph, and re-translates only what changed", async () => {
@@ -119,6 +170,22 @@ describe("TranslateScreen", () => {
       sourceLanguage: "de",
       outputText: "EN:Hallo und danke.\n\nEN:Wir sehen uns morgen.",
     });
+  });
+
+  it("follows a model chosen in Settings while the screen stays mounted", async () => {
+    const compact = { ...readyStatus, modelId: "translategemma-4b-q6-k", modelName: "TranslateGemma 4B", installedModelIds: ["translategemma-12b-q6-k", "translategemma-4b-q6-k"] };
+    mocks.status = compact;
+    mocks.translateText.mockImplementation((request: TextTranslationRequest) =>
+      translateLikeBackend(request).then((outcome) => ({ ...outcome, modelId: compact.modelId })));
+    const props = { transcripts: [], openRequest: null, dragging: false, onOpenSettings: () => {}, onLibraryChanged: () => {} };
+    const { rerender } = render(<TranslateScreen {...props} settings={{ saveHistory: true, translationModelId: compact.modelId } as AppSettings} />);
+    await screen.findByText(/TranslateGemma 4B · ready/);
+    type("Hallo und danke.");
+    await screen.findByText("EN:Hallo und danke.");
+
+    mocks.status = { ...compact, modelId: readyStatus.modelId, modelName: readyStatus.modelName, loaded: false };
+    rerender(<TranslateScreen {...props} settings={{ saveHistory: true, translationModelId: readyStatus.modelId } as AppSettings} />);
+    await screen.findByText(/TranslateGemma 12B · loads on first use/);
   });
 
   it("offers a way forward when memory is low", async () => {

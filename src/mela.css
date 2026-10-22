@@ -1,0 +1,148 @@
+/* ---------- Mela, the marmot companion ----------
+   Decorative only: never clickable, never covers text. In the pill she sits
+   behind the capsule and peeks over its top edge; in the main window she sits
+   in the bottom-right corner. Moods arrive as data-mood; every part listed with
+   on-<mood> shows only in that mood. --mela-level is the live mic level. */
+.mela {
+  --mela-level: 0;
+  --mela-ease: cubic-bezier(0.22, 1, 0.36, 1);   /* settles without overshoot */
+  --mela-ease-in-out: cubic-bezier(0.45, 0, 0.25, 1);
+  --mela-move: 520ms;
+  --mela-glass-top: rgb(236 238 250 / 80%);
+  --mela-glass-bottom: rgb(198 204 236 / 64%);
+  --mela-glass-paw: rgb(255 255 255 / 86%);
+  --mela-glass-shade: rgb(64 64 140 / 14%);
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+}
+.mela svg * { transform-box: fill-box; }
+.mela-art { display: block; width: 100%; height: auto; overflow: visible; }
+.mela-pt { opacity: 0; transition: opacity 160ms ease; }
+.mela[data-mood="idle"] .on-idle,
+.mela[data-mood="listen"] .on-listen,
+.mela[data-mood="think"] .on-think,
+.mela[data-mood="work"] .on-work,
+.mela[data-mood="happy"] .on-happy,
+.mela[data-mood="lang"] .on-lang,
+.mela[data-mood="oops"] .on-oops,
+.mela[data-mood="private"] .on-private,
+.mela[data-mood="sleep"] .on-sleep,
+.mela[data-mood="offline"] .on-offline,
+.mela[data-mood="egg"] .on-egg { opacity: 1; }
+.mela .mela-badge { opacity: 0; transition: opacity 300ms; }
+.mela.has-flag[data-mood="listen"] .mela-badge, .mela.has-flag[data-mood="idle"] .mela-badge { opacity: 1; }
+
+/* Material: frosted glass with a bright rim and a faint brand caustic at the base.
+   Motion rules: one easing family, small amplitudes, no bouncing or looping wiggles.
+   Poses are reached by moving the parts (paws, eyes, head, flag), never by swapping. */
+/* The pill is always dark glass, so she uses the dark material there in every theme. */
+[data-theme="dark"] .mela, .mela-pill {
+  --mela-glass-top: rgb(255 255 255 / 30%);
+  --mela-glass-bottom: rgb(196 202 240 / 14%);
+  --mela-glass-paw: rgb(255 255 255 / 44%);
+  --mela-glass-shade: rgb(0 0 20 / 18%);
+}
+.mela-crystal-art { filter: drop-shadow(0 2px 5px rgb(10 10 30 / 16%)); }
+.mela-crystal-edge { fill: none; stroke: rgb(40 40 90 / 30%); stroke-width: 1.8; }
+.mela-crystal-inner-ear { fill: rgb(139 92 255 / 24%); }
+.mela-crystal-pole { stroke: rgb(120 120 140 / 75%); stroke-width: 1.4; stroke-linecap: round; }
+.mela-crystal-glint { fill: none; stroke: #ffffff; stroke-width: 1.5; stroke-linecap: round; opacity: 0.85; }
+.mela-crystal-glint.is-soft { stroke-width: 1.1; opacity: 0.45; }
+.mela-crystal-shadow, .mela-crystal-groundhog { fill: rgb(0 0 0 / 0%); transition: fill 600ms ease; }
+.mela-window .mela-crystal-shadow { fill: rgb(0 0 0 / 12%); }
+
+/* Enter and leave: rise out of the pill, sink back in. The rig does nothing else. */
+.mela-rig { transform-origin: 50% 100%; transition: transform 560ms var(--mela-ease); }
+.mela.is-away .mela-rig { transform: translateY(110%); transition: transform 280ms cubic-bezier(0.5, 0, 0.75, 0); }
+
+/* Whole figure: breathing at rest, leaning in while listening */
+.mela .mela-motion { transform-origin: 50% 100%; transition: transform var(--mela-move) var(--mela-ease); }
+.mela[data-mood="idle"] .mela-motion,
+.mela[data-mood="offline"] .mela-motion { animation: mela-c-breathe 5.2s var(--mela-ease-in-out) infinite; }
+.mela[data-mood="listen"] .mela-motion { transform: translateY(calc(-1.2% - var(--mela-level) * 1.2%)) scale(1.01); transition: transform 180ms var(--mela-ease); }
+.mela[data-mood="think"] .mela-motion { transform: rotate(-1.6deg); }
+.mela[data-mood="work"] .mela-motion { transform: rotate(-0.8deg); }
+.mela[data-mood="lang"] .mela-motion { transform: rotate(1.4deg); }
+.mela[data-mood="oops"] .mela-motion { transform: translateY(0.8%) scale(1, 0.99); }
+.mela[data-mood="private"] .mela-motion { transform: translateY(0.6%); }
+.mela[data-mood="sleep"] .mela-motion { animation: mela-c-sleep 6.4s var(--mela-ease-in-out) infinite; }
+.mela[data-mood="happy"] .mela-motion { animation: mela-c-lift 900ms var(--mela-ease) 1; }
+.mela[data-mood="egg"] .mela-motion { animation: mela-c-lift 1100ms var(--mela-ease) 1; }
+
+/* Head: tilts to think, cocks at an error, nods while reading */
+.mela .mela-face { transform-origin: 50% 70%; transition: transform var(--mela-move) var(--mela-ease); }
+.mela[data-mood="think"] .mela-face { transform: rotate(-5deg) translate(0.4px, -0.4px); }
+.mela[data-mood="oops"] .mela-face { transform: rotate(-6deg); }
+.mela[data-mood="lang"] .mela-face { transform: rotate(3deg); }
+.mela[data-mood="sleep"] .mela-face { transform: translateY(1px) rotate(2deg); }
+.mela[data-mood="work"] .mela-face { animation: mela-c-nod 3.2s var(--mela-ease-in-out) infinite; }
+
+/* Eyes: they look where she thinks, and close slowly instead of switching */
+.mela .mela-eyes { transition: transform 420ms var(--mela-ease); }
+.mela[data-mood="think"] .mela-eyes { transform: translate(1.3px, -1.6px); }
+.mela[data-mood="lang"] .mela-eyes { transform: translate(1.2px, -0.6px); }
+.mela[data-mood="egg"] .mela-eyes { transform: translate(1.4px, 0.6px); }
+.mela[data-mood="work"] .mela-eyes { animation: mela-c-read 3.2s var(--mela-ease-in-out) infinite; }
+.mela .mela-lids { transform-origin: 50% 50%; transition: transform 520ms var(--mela-ease-in-out), opacity 220ms ease; }
+.mela[data-mood="sleep"] .mela-lids,
+.mela[data-mood="private"] .mela-lids { transform: scaleY(0.14); }
+.mela[data-mood="sleep"] .mela-lids { transition-duration: 1400ms, 220ms; }
+.mela .mela-blink { transform-origin: 50% 50%; animation: mela-c-blink 6.2s infinite; }
+.mela[data-mood="sleep"] .mela-blink, .mela[data-mood="private"] .mela-blink { animation: none; }
+
+/* Ears: they rise with a live microphone and rest otherwise; an occasional twitch at rest */
+.mela .mela-ear { transform: translateY(1.5px); transition: transform 180ms var(--mela-ease); }
+.mela[data-mood="listen"] .mela-ear { transform: translateY(calc(-0.8px - var(--mela-level) * 2.2px)); }
+.mela[data-mood="sleep"] .mela-ear,
+.mela[data-mood="private"] .mela-ear { transform: translateY(2.6px) scale(0.9); transition-duration: 700ms; }
+.mela .mela-ear-twitch { transform-origin: 50% 100%; }
+.mela[data-mood="idle"] .mela-ear.is-right .mela-ear-twitch { animation: mela-c-twitch 9s ease-in-out infinite; }
+
+/* Paws travel from the chest to their pose; arms grow from the shoulder alongside */
+.mela .mela-paw { transform-origin: 50% 50%; transition: transform var(--mela-move) var(--mela-ease); }
+.mela[data-mood="think"] .mela-paw.is-right { transform: translate(-0.5px, -8.5px); }
+.mela[data-mood="happy"] .mela-paw.is-right { transform: translate(26px, -21px); }
+.mela[data-mood="lang"] .mela-paw.is-right { transform: translate(24px, -18px); }
+.mela[data-mood="oops"] .mela-paw.is-left { transform: translate(-27px, -10px); }
+.mela[data-mood="oops"] .mela-paw.is-right { transform: translate(27px, -10px); }
+.mela[data-mood="egg"] .mela-paw.is-left { transform: translate(-24px, -32px); }
+.mela[data-mood="egg"] .mela-paw.is-right { transform: translate(24px, -32px); }
+.mela[data-mood="private"] .mela-paw.is-left { transform: translate(-3.5px, -26.5px) scale(1.45); }
+.mela[data-mood="private"] .mela-paw.is-right { transform: translate(3.5px, -26.5px) scale(1.45); }
+.mela .mela-paw-wave { transform-origin: 50% 100%; }
+.mela[data-mood="happy"] .mela-paw.is-right .mela-paw-wave { animation: mela-c-wave 1.2s var(--mela-ease-in-out) 450ms 1; }
+.mela .mela-limb { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset var(--mela-move) var(--mela-ease), opacity 160ms ease; }
+.mela[data-mood="oops"] .mela-limb.on-oops,
+.mela[data-mood="egg"] .mela-limb.on-egg,
+.mela[data-mood="happy"] .mela-limb.on-happy,
+.mela[data-mood="lang"] .mela-limb.on-lang,
+.mela[data-mood="private"] .mela-limb.on-private { stroke-dashoffset: 0; }
+
+/* Props arrive gently: the flag rises into her paw, glasses and shades slide on */
+.mela .mela-crystal-flag { opacity: 0; transform: translateY(8px); transition: opacity 240ms ease, transform var(--mela-move) var(--mela-ease); }
+.mela[data-mood="lang"] .mela-crystal-flag { opacity: 1; transform: none; transition-delay: 140ms; }
+.mela .mela-crystal-glasses, .mela .mela-crystal-shades { opacity: 0; transform: translateY(-4px); transition: opacity 280ms ease, transform 480ms var(--mela-ease); }
+.mela[data-mood="work"] .mela-crystal-glasses,
+.mela[data-mood="offline"] .mela-crystal-shades { opacity: 1; transform: none; }
+.mela-window[data-mood="egg"] .mela-crystal-groundhog { fill: rgb(0 0 0 / 10%); }
+
+@keyframes mela-c-breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.008, 1.012); } }
+@keyframes mela-c-sleep { 0%, 100% { transform: translateY(1.4%) scale(1, 1); } 50% { transform: translateY(1.4%) scale(1.012, 0.99); } }
+@keyframes mela-c-lift { 0%, 100% { transform: translateY(0); } 38% { transform: translateY(-2.6%); } }
+@keyframes mela-c-nod { 0%, 70%, 100% { transform: translateY(0); } 80% { transform: translateY(0.7px); } }
+@keyframes mela-c-read { 0%, 100% { transform: translateX(-1px); } 50% { transform: translateX(1px); } }
+@keyframes mela-c-blink { 0%, 93%, 100% { transform: scaleY(1); } 94.5% { transform: scaleY(0.1); } 96.5% { transform: scaleY(1); } }
+@keyframes mela-c-twitch { 0%, 84%, 100% { transform: rotate(0); } 87% { transform: rotate(9deg); } 90% { transform: rotate(0); } }
+@keyframes mela-c-wave { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(10deg); } 65% { transform: rotate(-6deg); } }
+
+/* ---------- Placement ---------- */
+.overlay-capsule.has-mela { isolation: isolate; }
+.mela-pill { z-index: -1; left: 12px; bottom: calc(100% - 14px); width: 58px; clip-path: inset(-60% -80% 14px -60%); }
+.mela-window { position: fixed; z-index: 40; right: 22px; bottom: 14px; width: 70px; }
+/* Room under the last row, so content can always scroll clear of her corner */
+.main-content.has-mela .content-frame { padding-bottom: calc(var(--space-7) + 96px); }
+/* The dev gallery reel shows her large; .mela-window keeps its fixed corner elsewhere */
+.mela-reel .mela-window { position: absolute; inset: auto 0 0; width: 100%; }
+
+html[data-motion="reduced"] .mela *, html[data-motion="reduced"] .mela { animation: none !important; transition-duration: 0ms !important; }

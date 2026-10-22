@@ -170,7 +170,10 @@ def main():
         except MemoryError:
             emit({"type": "error", "code": "MODEL_OUT_OF_MEMORY", "message": "VibeVoice ran out of unified memory"})
         except Exception as error:
-            emit({"type": "error", "code": "MODEL_WORKER_FAILED", "message": str(error)})
+            # MLX raises a full Metal working set as a RuntimeError.
+            message = str(error)
+            code = "MODEL_OUT_OF_MEMORY" if "insufficient memory" in message.lower() or "outofmemory" in message.lower() else "MODEL_WORKER_FAILED"
+            emit({"type": "error", "code": code, "message": message})
 
 
 if __name__ == "__main__":
