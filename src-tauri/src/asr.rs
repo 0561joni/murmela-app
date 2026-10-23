@@ -25,6 +25,7 @@ use crate::transcription_policy::{
     MIN_SPLIT_RETRY_MS,
 };
 use crate::transcription_quality::repetition_reason;
+use crate::transcription_progress::{set_step, Step};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -676,6 +677,7 @@ fn run_resilient_whisper(
     let mut decoder_state = context
         .create_state()
         .context("failed to create whisper state for resilient transcription")?;
+    set_step(Step::FindingPauses);
     let preferred_splits = vad_model_path
         .and_then(|path| detect_vad_splits(path, prepared).ok())
         .unwrap_or_default();
@@ -688,6 +690,7 @@ fn run_resilient_whisper(
             &preferred_splits,
         )
     };
+    set_step(Step::Transcribing);
     if chunks.is_empty() {
         return Err(anyhow!(
             "TRANSCRIPTION_EMPTY: prepared audio had no samples"
@@ -1164,6 +1167,7 @@ fn run_whisper(
     if duration_ms > DIRECT_FILE_MAX_MS && request.timestamps {
         return run_resilient_whisper(context, model, prepared, request, progress, vad_model_path);
     }
+    set_step(Step::Transcribing);
 
     let reporter = progress.clone().map(ProgressReporter::full);
     let dictionary_prompt = whisper_dictionary_prompt(&request.context_terms);

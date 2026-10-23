@@ -42,6 +42,7 @@ pub mod system_volume;
 pub mod transcript_commands;
 pub mod transcript_stitching;
 pub mod transcription_policy;
+pub mod transcription_progress;
 pub mod transcription_quality;
 pub mod transcription_worker;
 pub mod text_translation;

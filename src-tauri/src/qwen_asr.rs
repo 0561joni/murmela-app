@@ -1,6 +1,5 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -10,7 +9,6 @@ use std::time::Instant;
 use anyhow::{anyhow, Context, Result};
 use fs2::FileExt;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::asr::{
@@ -24,6 +22,7 @@ use crate::audio_preprocess::PreparedAudio;
 use crate::settings::{LanguageMode, ModelProfile};
 use crate::transcript_stitching::{align_segments_to_sentences, stitch_segments};
 use crate::transcription_policy::{MAX_CHUNK_MS, MIN_SPLIT_RETRY_MS};
+use crate::transcription_progress::{set_step, Step};
 use crate::transcription_quality::{normalize_text, repetition_reason};
 
 pub const QWEN_MODEL_ID: &str = "qwen3-asr-1.7b-bf16";
@@ -140,29 +139,19 @@ fn validate_artifacts(
         if record.size_bytes != *expected_size || record.sha256 != *expected_sha256 {
             return Ok(false);
         }
-        let artifact_path = model_dir.join(path);
-        if !verify_artifact(&artifact_path, *expected_size, expected_sha256)? {
+        // The download hashed every file before writing the install record;
+        // like the other models, discovery only checks the record and sizes.
+        // Hashing 4.4 GB here cost every transcription worker about 10 s.
+        let size = model_dir
+            .join(path)
+            .metadata()
+            .map(|metadata| metadata.len() as i64)
+            .ok();
+        if size != Some(*expected_size) {
             return Ok(false);
         }
     }
     Ok(true)
-}
-
-fn verify_artifact(path: &Path, expected_size: i64, expected_sha256: &str) -> Result<bool> {
-    if path.metadata().map(|value| value.len() as i64).ok() != Some(expected_size) {
-        return Ok(false);
-    }
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 256 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()) == expected_sha256)
 }
 
 #[derive(Debug)]
@@ -233,12 +222,19 @@ impl QwenAsrEngine {
         } else {
             60_000
         };
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| anyhow!("Qwen model context cache is unavailable"))?;
+        load_into_cache(&mut cache, model)?;
+
         let chunks = if duration_ms <= direct_limit {
             vec![AudioChunk {
                 start_sample: 0,
                 end_sample: prepared.samples.len(),
             }]
         } else {
+            set_step(Step::FindingPauses);
             let preferred_splits = vad_model_path
                 .and_then(|path| detect_vad_splits(path, prepared).ok())
                 .unwrap_or_default();
@@ -252,12 +248,8 @@ impl QwenAsrEngine {
                 )
             }
         };
+        set_step(Step::Transcribing);
 
-        let mut cache = self
-            .cache
-            .lock()
-            .map_err(|_| anyhow!("Qwen model context cache is unavailable"))?;
-        load_into_cache(&mut cache, model)?;
         let context = &mut cache.as_mut().expect("Qwen cache populated").context;
         context.set_forced_language(forced_language)?;
         // The runtime caches the encoded prompt and reuses it for each
@@ -907,7 +899,7 @@ extern "C" fn token_progress_callback(_piece: *const c_char, userdata: *mut c_vo
         let _ = state
             .progress
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(1).min(state.ceiling))
+                Some(current.saturating_add(1).min(state.ceiling).max(current))
             });
     }
 }
@@ -966,6 +958,7 @@ fn native_thread_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn maps_iso_codes_and_names() {
@@ -1033,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_validation_rejects_same_size_corruption() {
+    fn artifact_validation_checks_the_install_record_and_sizes() {
         let root = std::env::temp_dir().join(format!("murmela-qwen-discovery-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).expect("model directory");
         fs::write(root.join("artifact.bin"), b"valid").expect("artifact");
@@ -1050,8 +1043,13 @@ mod tests {
         let required = [("artifact.bin", 5, expected_hash.as_str())];
         assert!(validate_artifacts(&root, &manifest, &required).expect("valid artifact"));
 
-        fs::write(root.join("artifact.bin"), b"other").expect("same-size corruption");
-        assert!(!validate_artifacts(&root, &manifest, &required).expect("corrupt artifact"));
+        fs::write(root.join("artifact.bin"), b"truncated").expect("resized artifact");
+        assert!(!validate_artifacts(&root, &manifest, &required).expect("resized artifact"));
+
+        fs::write(root.join("artifact.bin"), b"valid").expect("artifact");
+        let other_pin = "0".repeat(64);
+        let required = [("artifact.bin", 5, other_pin.as_str())];
+        assert!(!validate_artifacts(&root, &manifest, &required).expect("unpinned record"));
         fs::remove_dir_all(root).expect("cleanup");
     }
 

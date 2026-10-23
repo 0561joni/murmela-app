@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -73,6 +74,84 @@ def use_bundled_tokenizer(model_path):
     AutoTokenizer.from_pretrained = from_pretrained
 
 
+# VibeVoice writes each segment as JSON with its end time, e.g. "End time": 12.34.
+SEGMENT_END = re.compile(r'"end(?:[ _]?time)?"\s*:\s*"?(\d+(?:\.\d+)?)', re.IGNORECASE)
+# The model resamples to 24 kHz; mlx-audio's own duration uses the same rate.
+MODEL_SAMPLE_RATE = 24000
+PROGRESS_INTERVAL_SECONDS = 2.0
+PROGRESS_TAIL_TOKENS = 256
+# Greedy decoding can get stuck writing the same token or two forever
+# ("a, a, a, …", seen in a 40-minute meeting). Real output, with its JSON keys,
+# timestamps and words, never has this few distinct tokens in a window.
+LOOP_WINDOW_TOKENS = 200
+LOOP_MAX_DISTINCT_TOKENS = 6
+# A second pass that discourages repeating the last few tokens gets past such
+# a spot (the same meeting then transcribed cleanly). Only used after a loop,
+# so normal decoding stays untouched.
+RETRY_DECODING = {"repetition_penalty": 1.1, "repetition_context_size": 20}
+
+
+class DecoderLoop(Exception):
+    def __init__(self, at_seconds):
+        super().__init__(f"decoder repeated itself after {at_seconds:.0f} s of audio")
+        self.at_seconds = at_seconds
+
+
+def report_decoding_progress(model):
+    """Report how far decoding got, from the end time of the newest segment.
+
+    VibeVoice decodes a recording in a single pass. Without this, Murmela hears
+    nothing between "model loaded" (1 %) and "done" (100 %), and a pass that
+    takes longer than its ten-minute stall watchdog (a 10-minute chunk on an
+    18 GB Mac under memory pressure) is killed as if it had hung.
+    """
+    audio_seconds = [0.0]
+    preprocess_audio = model._preprocess_audio
+    stream_generate = model.stream_generate
+
+    def preprocess_and_measure(*args, **kwargs):
+        audio = preprocess_audio(*args, **kwargs)
+        try:
+            audio_seconds[0] = audio.shape[-1] / MODEL_SAMPLE_RATE
+        except Exception:
+            audio_seconds[0] = 0.0
+        return audio
+
+    def generate_and_report(*args, **kwargs):
+        tokens = []
+        reported = 1
+        last_end = 0.0
+        checked_at = time.monotonic()
+        for token, logprobs in stream_generate(*args, **kwargs):
+            tokens.append(token)
+            # Stop at once instead of filling memory until max_tokens.
+            if (
+                len(tokens) % 50 == 0
+                and len(tokens) >= LOOP_WINDOW_TOKENS
+                and len(set(tokens[-LOOP_WINDOW_TOKENS:])) <= LOOP_MAX_DISTINCT_TOKENS
+            ):
+                raise DecoderLoop(last_end)
+            now = time.monotonic()
+            if audio_seconds[0] > 0 and now - checked_at >= PROGRESS_INTERVAL_SECONDS:
+                checked_at = now
+                try:
+                    tail = model.tokenizer.decode(tokens[-PROGRESS_TAIL_TOKENS:], skip_special_tokens=True)
+                    ends = SEGMENT_END.findall(tail)
+                    if ends:
+                        last_end = max(last_end, float(ends[-1]))
+                        percent = min(99, 1 + int(98 * float(ends[-1]) / audio_seconds[0]))
+                        if percent > reported:
+                            reported = percent
+                            emit({"type": "progress", "progress_percent": percent})
+                except Exception:
+                    # Progress is a courtesy; never let it break a transcription.
+                    pass
+            yield token, logprobs
+
+    model._preprocess_audio = preprocess_and_measure
+    model.stream_generate = generate_and_report
+
+
 def handle(request):
     if request.get("protocolVersion") != PROTOCOL_VERSION:
         raise ValueError("unsupported worker protocol version")
@@ -81,24 +160,42 @@ def handle(request):
     from mlx_audio.stt.generate import generate_transcription
     from mlx_audio.stt.utils import load_model
 
-    emit({"type": "progress", "progress_percent": 1})
     use_bundled_tokenizer(request["modelPath"])
     model = load_model(request["modelPath"])
+    report_decoding_progress(model)
+    # The first progress tells Murmela the model is loaded and decoding begins.
+    emit({"type": "progress", "progress_percent": 1})
     max_tokens = int(request.get("maxTokens", 32768))
-    with tempfile.TemporaryDirectory(prefix="murmela-vibevoice-") as output_dir:
-        transcription = generate_transcription(
-            model=model,
-            audio=request["audioPath"],
-            output_path=os.path.join(output_dir, "transcript"),
-            format="json",
-            verbose=False,
-            max_tokens=max_tokens,
-            context=request.get("prompt") or None,
-            # Pin decoding so results do not depend on library defaults:
-            # greedy (temperature 0, no nucleus filtering) unless asked otherwise.
-            temperature=0.0 if request.get("greedy", True) else 0.7,
-            top_p=1.0,
-        )
+
+    def transcribe(**decoding):
+        with tempfile.TemporaryDirectory(prefix="murmela-vibevoice-") as output_dir:
+            return generate_transcription(
+                model=model,
+                audio=request["audioPath"],
+                output_path=os.path.join(output_dir, "transcript"),
+                format="json",
+                verbose=False,
+                max_tokens=max_tokens,
+                context=request.get("prompt") or None,
+                # Pin decoding so results do not depend on library defaults:
+                # greedy (temperature 0, no nucleus filtering) unless asked otherwise.
+                temperature=0.0 if request.get("greedy", True) else 0.7,
+                top_p=1.0,
+                **decoding,
+            )
+
+    try:
+        transcription = transcribe()
+    except DecoderLoop as loop:
+        print(f"{loop}; transcribing again with a repetition penalty", file=sys.stderr, flush=True)
+        import mlx.core as mx
+
+        mx.clear_cache()  # the looping pass's cache would otherwise linger
+        try:
+            transcription = transcribe(**RETRY_DECODING)
+        except DecoderLoop as again:
+            emit({"type": "error", "code": "DECODER_REPETITION", "message": f"VibeVoice {again} twice"})
+            return
     raw_segments = value(transcription, "sentences", "segments", default=[]) or []
     segments = []
     for item in raw_segments:

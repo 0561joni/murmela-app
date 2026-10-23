@@ -172,7 +172,9 @@ export function FilesScreen(props: Props) {
                   ? "Text ready · identifying speakers"
                   : item.stage === "completed"
                     ? saved ? "Saved to Library" : "Not saved to Library"
-                    : labels[item.stage];
+                    : item.stage === "transcribing" && item.statusText
+                      ? item.statusText // the step: loading the model, finding pauses, …
+                      : labels[item.stage];
               return (
                 <li className={"queue-item stage-" + item.stage} key={item.id}>
                   <div className="queue-item-row">

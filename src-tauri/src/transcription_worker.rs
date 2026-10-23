@@ -12,6 +12,7 @@ use crate::asr::{
     discover_installed_models, FileTranscriptionRequest, LocalTranscriptionEngine,
     TranscriptResult, TranscriptionEngine,
 };
+use crate::transcription_progress::{self, Step};
 
 pub const WORKER_ARG: &str = "--transcribe-worker";
 /// Same protocol, but one request per stdin line and the process stays alive
@@ -32,8 +33,16 @@ pub struct WorkerRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerOutput {
-    Progress { progress_percent: i32 },
-    Heartbeat { progress_percent: i32 },
+    Progress {
+        progress_percent: i32,
+        #[serde(default)]
+        step: Option<Step>,
+    },
+    Heartbeat {
+        progress_percent: i32,
+        #[serde(default)]
+        step: Option<Step>,
+    },
     Result { result: TranscriptResult },
     Ready,
     Error { message: String },
@@ -59,19 +68,21 @@ fn run_stdio_worker_inner() -> Result<()> {
     let request: WorkerRequest =
         serde_json::from_str(&input).context("failed to parse transcription worker request")?;
 
-    let models = discover_installed_models(&request.models_dir)?;
-    let engine = LocalTranscriptionEngine::new(request.models_dir, models);
+    // Report from the start: checking the installed models can take seconds.
+    transcription_progress::set_step(Step::LoadingModel);
     let progress = Arc::new(AtomicI32::new(-1));
     let finished = Arc::new(AtomicBool::new(false));
     let stdout = Arc::new(Mutex::new(io::stdout()));
-
     let progress_thread = spawn_progress_emitter(
         Arc::clone(&progress),
         Arc::clone(&finished),
         Arc::clone(&stdout),
     );
 
-    let result = engine.transcribe_file(request.request, Some(progress));
+    let result = discover_installed_models(&request.models_dir).and_then(|models| {
+        LocalTranscriptionEngine::new(request.models_dir, models)
+            .transcribe_file(request.request, Some(progress))
+    });
     finished.store(true, Ordering::SeqCst);
     let _ = progress_thread.join();
 
@@ -140,6 +151,7 @@ fn handle_persistent_request(
         return emit_output_to(stdout, &WorkerOutput::Ready);
     }
 
+    transcription_progress::set_step(Step::LoadingModel);
     let progress = Arc::new(AtomicI32::new(-1));
     let finished = Arc::new(AtomicBool::new(false));
     let progress_thread = spawn_progress_emitter(
@@ -161,23 +173,28 @@ fn spawn_progress_emitter(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let mut last_progress = -1;
+        let mut last_step = None;
         let mut ticks = 0_u32;
         while !finished.load(Ordering::SeqCst) {
             let current = progress.load(Ordering::Relaxed);
-            if current >= 0 && current != last_progress {
+            let step = transcription_progress::current_step();
+            if (current >= 0 && current != last_progress) || last_step != Some(step) {
                 let _ = emit_output_to(
                     &stdout,
                     &WorkerOutput::Progress {
                         progress_percent: current,
+                        step: Some(step),
                     },
                 );
                 last_progress = current;
+                last_step = Some(step);
             }
             if ticks % 4 == 0 {
                 let _ = emit_output_to(
                     &stdout,
                     &WorkerOutput::Heartbeat {
                         progress_percent: current,
+                        step: Some(step),
                     },
                 );
             }
@@ -233,7 +250,13 @@ mod tests {
         let output = parse_worker_output_line(r#"{"type":"progress","progress_percent":42}"#)
             .expect("progress output");
         match output {
-            WorkerOutput::Progress { progress_percent } => assert_eq!(progress_percent, 42),
+            WorkerOutput::Progress {
+                progress_percent,
+                step,
+            } => {
+                assert_eq!(progress_percent, 42);
+                assert_eq!(step, None);
+            }
             _ => panic!("expected progress"),
         }
     }
@@ -269,10 +292,16 @@ mod tests {
 
     #[test]
     fn parses_heartbeat_output_line() {
-        let output = parse_worker_output_line(r#"{"type":"heartbeat","progress_percent":17}"#)
+        let output = parse_worker_output_line(r#"{"type":"heartbeat","progress_percent":17,"step":"finding_pauses"}"#)
             .expect("heartbeat output");
         match output {
-            WorkerOutput::Heartbeat { progress_percent } => assert_eq!(progress_percent, 17),
+            WorkerOutput::Heartbeat {
+                progress_percent,
+                step,
+            } => {
+                assert_eq!(progress_percent, 17);
+                assert_eq!(step, Some(Step::FindingPauses));
+            }
             _ => panic!("expected heartbeat"),
         }
     }

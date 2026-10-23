@@ -19,6 +19,7 @@ use crate::asr::{
 use crate::audio_files::{FileTranscriptionRequest, SelectedSourceFile};
 use crate::settings::AppSettings;
 use crate::storage::{self, TranscriptSummary};
+use crate::transcription_progress::{self, Step, PREPARING_SHARE};
 use crate::transcription_worker::{self, WorkerOutput, WorkerRequest};
 use crate::vocabulary;
 use crate::{diarization, diarization_worker, model_downloads};
@@ -482,8 +483,9 @@ impl FileTranscriptionController {
 
         let preparation_started = Instant::now();
         let temp_dir = self.db_path.parent().unwrap_or(Path::new(".")).join("temp");
-        let prepared =
-            crate::audio_preprocess::prepare_job_audio(&request.source_file.file_path, &temp_dir)?;
+        let prepared = self.with_preparing_progress(request, || {
+            crate::audio_preprocess::prepare_job_audio(&request.source_file.file_path, &temp_dir)
+        })?;
         if control.is_cancelled() {
             return Err(anyhow!("File preparation canceled."));
         }
@@ -571,14 +573,13 @@ impl FileTranscriptionController {
             }
         }
 
+        let progress_plan =
+            self.progress_plan(resolved_model.as_ref(), request.source_file.duration_ms);
         self.update_status(
             &request.job_id,
             FileTranscriptionJobStage::Transcribing,
-            &format!(
-                "Transcribing {} locally...",
-                request.source_file.original_name
-            ),
-            Some(0.0),
+            Step::LoadingModel.label(),
+            Some(PREPARING_SHARE),
             Some(0),
             request.source_file.duration_ms,
             None,
@@ -623,12 +624,14 @@ impl FileTranscriptionController {
                     &temp_dir,
                     Arc::clone(&control),
                     started_at,
+                    &progress_plan,
                 )?,
             _ => self.run_transcription_worker(
                 request,
                 engine_request,
                 Arc::clone(&control),
                 started_at,
+                progress_plan,
             )?,
         };
 
@@ -967,6 +970,7 @@ impl FileTranscriptionController {
         temp_dir: &Path,
         control: Arc<FileJobRunControl>,
         started_at: Instant,
+        progress_plan: &transcription_progress::Plan,
     ) -> Result<TranscriptResult> {
         let local_path = sidecar.local_path(dir);
         let remote_path = sidecar.remote_path(dir);
@@ -990,7 +994,7 @@ impl FileTranscriptionController {
                 *window = Some(ProgressWindow {
                     offset: index as f32 * share * 100.0,
                     share,
-                    text: format!("Transcribing {label}..."),
+                    text: format!("Transcribing {label}…"),
                 });
             }
             let mut channel_request = engine_request.clone();
@@ -1004,6 +1008,7 @@ impl FileTranscriptionController {
                 channel_request,
                 Arc::clone(&control),
                 started_at,
+                progress_plan.clone(),
             );
             if let Ok(mut window) = self.progress_window.lock() {
                 *window = None;
@@ -1104,6 +1109,7 @@ impl FileTranscriptionController {
         engine_request: EngineFileTranscriptionRequest,
         control: Arc<FileJobRunControl>,
         started_at: Instant,
+        progress_plan: transcription_progress::Plan,
     ) -> Result<TranscriptResult> {
         let executable = std::env::current_exe()
             .map_err(|error| anyhow!("failed to resolve app executable: {error}"))?;
@@ -1149,6 +1155,8 @@ impl FileTranscriptionController {
 
         let mut last_progress = -1;
         let mut last_decoder_activity = Instant::now();
+        let mut tracker = transcription_progress::Tracker::new(progress_plan, Instant::now());
+        let mut shown = 0.0_f32;
 
         loop {
             if control.is_cancelled() {
@@ -1168,14 +1176,21 @@ impl FileTranscriptionController {
             }
 
             match output_rx.recv_timeout(Duration::from_millis(250)) {
-                Ok(Ok(WorkerOutput::Progress { progress_percent })) => {
+                Ok(Ok(WorkerOutput::Progress {
+                    progress_percent,
+                    step,
+                })) => {
                     if progress_percent > last_progress {
                         last_progress = progress_percent;
                         last_decoder_activity = Instant::now();
                     }
-                    self.update_worker_progress(request, progress_percent, started_at)?;
+                    shown = tracker.update(step, progress_percent, Instant::now());
+                    self.update_worker_progress(request, shown, tracker.step(), started_at)?;
                 }
-                Ok(Ok(WorkerOutput::Heartbeat { progress_percent })) => {
+                Ok(Ok(WorkerOutput::Heartbeat {
+                    progress_percent,
+                    step,
+                })) => {
                     if progress_percent > last_progress {
                         last_progress = progress_percent;
                         last_decoder_activity = Instant::now();
@@ -1189,7 +1204,8 @@ impl FileTranscriptionController {
                             "File transcription worker stopped advancing for ten minutes."
                         ));
                     }
-                    self.update_worker_progress(request, progress_percent.max(0), started_at)?;
+                    shown = tracker.update(step, progress_percent, Instant::now());
+                    self.update_worker_progress(request, shown, tracker.step(), started_at)?;
                 }
                 // Only persistent workers answer preload requests.
                 Ok(Ok(WorkerOutput::Ready)) => {}
@@ -1223,6 +1239,12 @@ impl FileTranscriptionController {
                             stderr_text.trim()
                         ));
                     }
+                    // Between the worker's reports, move on the estimate.
+                    let estimated = tracker.update(None, last_progress, Instant::now());
+                    if estimated - shown >= 0.2 {
+                        shown = estimated;
+                        self.update_worker_progress(request, shown, tracker.step(), started_at)?;
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     if let Some(status) = child.try_wait()? {
@@ -1237,33 +1259,38 @@ impl FileTranscriptionController {
         }
     }
 
+    /// `run_percent`: how far the worker run is (0–100), from its tracker.
     fn update_worker_progress(
         &self,
         request: &FileTranscriptionRequest,
-        raw_progress_percent: i32,
+        run_percent: f32,
+        step: Step,
         started_at: Instant,
     ) -> Result<()> {
         let window = self.progress_window.lock().ok().and_then(|window| window.clone());
-        let raw = (raw_progress_percent as f32).clamp(0.0, 100.0);
-        let pct = match &window {
-            Some(window) => window.offset + raw * window.share,
-            None => raw,
+        let run = run_percent.clamp(0.0, 100.0);
+        let transcription_pct = match &window {
+            Some(window) => window.offset + run * window.share,
+            None => run,
         };
+        let pct = PREPARING_SHARE + (100.0 - PREPARING_SHARE) * transcription_pct / 100.0;
         let processed_ms = request
             .source_file
             .duration_ms
             .map(|total_ms| (total_ms as f64 * pct as f64 / 100.0) as i64);
-        let eta_seconds = if pct > 0.0 {
+        // The bar moves with the expected time, so the time so far scales.
+        let eta_seconds = if transcription_pct > 0.0 {
             let elapsed_secs = started_at.elapsed().as_secs_f64();
-            let remaining_pct = 100.0 - pct as f64;
-            Some((elapsed_secs * remaining_pct / pct as f64).ceil() as i64)
+            let remaining_pct = 100.0 - transcription_pct as f64;
+            Some((elapsed_secs * remaining_pct / transcription_pct as f64).ceil() as i64)
         } else {
             None
         };
 
-        let text = window.map(|window| window.text).unwrap_or_else(|| {
-            format!("Transcribing {} locally...", request.source_file.original_name)
-        });
+        let text = match window {
+            Some(window) if step == Step::Transcribing => window.text,
+            _ => step.label().to_string(),
+        };
         self.update_status(
             &request.job_id,
             FileTranscriptionJobStage::Transcribing,
@@ -1275,6 +1302,64 @@ impl FileTranscriptionController {
             None,
             None,
         )
+    }
+
+    /// How long each step of a worker run will likely take on this file.
+    fn progress_plan(
+        &self,
+        model: Option<&InstalledModel>,
+        duration_ms: Option<i64>,
+    ) -> transcription_progress::Plan {
+        let speed = model
+            .and_then(|model| {
+                storage::get_file_transcription_performance(&self.db_path, &model.id)
+                    .ok()
+                    .flatten()
+            })
+            .map(|performance| performance.avg_audio_ms_per_wall_ms);
+        transcription_progress::Plan::new(
+            model.map_or("", |model| model.engine.as_str()),
+            model.map_or(0, |model| model.size_bytes),
+            duration_ms.unwrap_or(0),
+            speed,
+        )
+    }
+
+    /// Runs the audio preparation while its share of the bar fills.
+    fn with_preparing_progress<T>(
+        &self,
+        request: &FileTranscriptionRequest,
+        prepare: impl FnOnce() -> T,
+    ) -> T {
+        let (done, wait) = mpsc::channel::<()>();
+        let controller = self.clone();
+        let job_id = request.job_id.clone();
+        let size_bytes = request.source_file.size_bytes;
+        let ticker = thread::spawn(move || {
+            let started = Instant::now();
+            while wait.recv_timeout(Duration::from_millis(250))
+                == Err(mpsc::RecvTimeoutError::Timeout)
+            {
+                let _ = controller.update_status(
+                    &job_id,
+                    FileTranscriptionJobStage::Preparing,
+                    "Preparing audio file.",
+                    Some(transcription_progress::preparing_percent(
+                        size_bytes,
+                        started.elapsed(),
+                    )),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        });
+        let prepared = prepare();
+        let _ = done.send(());
+        let _ = ticker.join();
+        prepared
     }
 
     fn spawn_watchdog(

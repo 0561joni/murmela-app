@@ -13,6 +13,7 @@ use crate::diarization::{
     DiarizationSource, DiarizationStatus, DiarizationTurn, TranscriptSpeaker,
 };
 use crate::speaker_reconciliation::SpeakerAttribution;
+use crate::transcription_progress::{set_step, Step};
 use crate::{audio_preprocess, model_metadata, native_chunks};
 
 pub const WORKER_PROTOCOL_VERSION: u32 = 1;
@@ -136,8 +137,6 @@ fn transcribe_in_chunks(
         native_chunks::loudness(&prepared.samples, rate, at)
     });
     let count = spans.len() as i32;
-    // Leave the last few percent for matching speakers.
-    let share = 95 / count;
     let mut transcripts = Vec::with_capacity(spans.len());
     for (index, span) in spans.iter().enumerate() {
         let from = (span.start_ms * rate as i64 / 1_000) as usize;
@@ -147,11 +146,13 @@ fn transcribe_in_chunks(
             channels: prepared.channels,
             samples: prepared.samples[from..to].to_vec(),
         };
-        let base = index as i32 * share;
+        let base = index as i32 * 100 / count;
+        let share = (index as i32 + 1) * 100 / count - base;
         let result = run_worker_on(model, request, &audio, &|percent| report(base + percent * share / 100))?;
         transcripts.push(native_chunks::ChunkTranscript { span: *span, result });
     }
 
+    set_step(Step::MatchingSpeakers);
     let embedder = crate::model_downloads::installed_diarization_package_path(models_dir)
         .and_then(|package| native_chunks::VoiceEmbedder::load(&package));
     let voices: Vec<native_chunks::ChunkVoices> = match &embedder {
@@ -310,8 +311,12 @@ fn run_worker_process(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         match parse_worker_record(&line)? {
-            NativeWorkerRecord::Progress { progress_percent }
-            | NativeWorkerRecord::Heartbeat { progress_percent } => report(progress_percent),
+            NativeWorkerRecord::Progress { progress_percent } => {
+                // The worker's first progress comes once its model is loaded.
+                set_step(Step::Transcribing);
+                report(progress_percent);
+            }
+            NativeWorkerRecord::Heartbeat { progress_percent } => report(progress_percent),
             NativeWorkerRecord::Result { result: output } => {
                 result = Some(output);
                 break;

@@ -1,5 +1,11 @@
 # Release notes
 
+## Murmela 1.2.1: steadier file transcription
+
+- The progress bar for a file starts moving right away and says what Murmela is doing: loading the model, finding pauses, transcribing, matching speakers. The time left is more accurate too.
+- File transcriptions start about 10 seconds sooner, whichever engine you use.
+- VibeVoice: fixed long recordings that failed with "File transcription worker stopped advancing for ten minutes". The engine could get stuck repeating one word; Murmela now notices at once and transcribes that part again.
+
 ## Murmela 1.2: Mela, and dictation in Translate
 
 - Meet Mela, an optional little glass marmot. She peeks over the dictation pill and in the corner of the window, and follows what Murmela is doing: her ears rise while the microphone is on, she holds up the flag of a new target language, and she covers her eyes whenever your notes are on screen. She is off until you switch her on in Settings → Appearance & feedback, and Serious mode keeps her away.

@@ -1192,7 +1192,7 @@ export async function startFileTranscription(
           processedMs: 3500,
           totalMs: 8400,
           etaSeconds: 4,
-          statusText: `Transcribing ${sourceFile.originalName}...`,
+          statusText: "Transcribing…",
           result: null,
           errorMessage: null,
           startedAtMs: Date.now(),
