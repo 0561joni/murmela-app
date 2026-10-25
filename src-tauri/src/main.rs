@@ -1102,9 +1102,10 @@ async fn start_recording_session(
             .map(|settings| settings.sounds_enabled)
             .unwrap_or(false)
             && feedback.unwrap_or(true);
+        let pressed = std::time::Instant::now();
         if let Some(player) = state.sound_player.as_ref().as_ref() {
             player
-                .prepare_capture(enabled)
+                .begin_capture(enabled)
                 .map_err(|error| error.to_string())?;
         }
         let result = state
@@ -1115,6 +1116,8 @@ async fn start_recording_session(
             if let Some(player) = state.sound_player.as_ref().as_ref() {
                 player.finish_capture(false, true);
             }
+        } else {
+            sound::announce_when_live(state.sound_player.clone(), &state.recording_controller, pressed);
         }
         if shutdown::is_shutting_down() {
             let _ = state.recording_controller.cancel();

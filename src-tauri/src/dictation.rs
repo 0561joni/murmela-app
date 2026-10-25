@@ -19,7 +19,7 @@ use crate::insertion::{
 use crate::settings::{AppSettings, ShortcutMode};
 use crate::sound::SoundPlayer;
 use crate::storage;
-use crate::system_volume::{self, VolumeSnapshot};
+use crate::system_volume::VolumeDucker;
 use crate::vocabulary;
 
 const QUICK_DICTATE_STATUS_EVENT: &str = "quick-dictate-status";
@@ -202,7 +202,7 @@ pub struct QuickDictationController {
     is_suspended: Arc<Mutex<bool>>,
     registered_shortcut: Arc<Mutex<Option<String>>>,
     paste_target: Arc<Mutex<Option<PasteTarget>>>,
-    volume_snapshot: Arc<Mutex<Option<VolumeSnapshot>>>,
+    volume: Arc<VolumeDucker>,
     // Bumped on every `begin_listening`. The overlay-level poller captures the
     // generation it was spawned for and exits as soon as it is superseded, so
     // exactly one poller runs at a time (no zombie threads on intensive use).
@@ -231,6 +231,9 @@ pub struct QuickDictationController {
     /// The current dictation was started from the app's own window (the
     /// Translate screen's microphone): its text stays in the app, unpasted.
     in_app: Arc<AtomicBool>,
+    /// When the one-key shortcut went down, for a press that may become
+    /// push-to-talk; the dictation's start timing counts from here.
+    key_down_at: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 /// Runs one-key gestures in order on a worker thread, off the event tap.
@@ -238,6 +241,9 @@ struct GestureSink {
     actions: Mutex<std::sync::mpsc::Sender<crate::key_gesture::Action>>,
     status: Arc<Mutex<QuickDictationStatusResponse>>,
     language_combo: Arc<AtomicBool>,
+    recording: RecordingController,
+    is_suspended: Arc<Mutex<bool>>,
+    key_down_at: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl GestureSink {
@@ -246,6 +252,9 @@ impl GestureSink {
         let (tx, rx) = std::sync::mpsc::channel::<Action>();
         let status = controller.status.clone();
         let language_combo = controller.language_combo.clone();
+        let recording = controller.recording_controller.clone();
+        let is_suspended = controller.is_suspended.clone();
+        let key_down_at = controller.key_down_at.clone();
         thread::Builder::new()
             .name("murmela-key-actions".into())
             .spawn(move || {
@@ -280,6 +289,9 @@ impl GestureSink {
             actions: Mutex::new(tx),
             status,
             language_combo,
+            recording,
+            is_suspended,
+            key_down_at,
         }
     }
 }
@@ -298,6 +310,30 @@ impl crate::key_gesture::tap::Sink for GestureSink {
     }
     fn language_combo_enabled(&self) -> bool {
         self.language_combo.load(Ordering::SeqCst)
+    }
+    /// Opens the microphone while the key is still being told apart from a
+    /// tap (`HOLD_DELAY`), so push-to-talk records from the moment the key
+    /// went down. A tap closes it again; nothing it heard is kept.
+    fn prime(&self, likely: bool) {
+        if let Ok(mut key_down_at) = self.key_down_at.lock() {
+            *key_down_at = likely.then(std::time::Instant::now);
+        }
+        let idle = self
+            .status
+            .lock()
+            .map(|status| {
+                !matches!(
+                    status.state,
+                    QuickDictationState::Listening | QuickDictationState::Processing
+                )
+            })
+            .unwrap_or(false);
+        let suspended = self.is_suspended.lock().map(|value| *value).unwrap_or(true);
+        if likely && idle && !suspended {
+            self.recording.arm();
+        } else if !likely {
+            self.recording.disarm();
+        }
     }
 }
 
@@ -377,12 +413,13 @@ impl QuickDictationController {
             is_suspended: Arc::new(Mutex::new(false)),
             registered_shortcut: Arc::new(Mutex::new(None)),
             paste_target: Arc::new(Mutex::new(None)),
-            volume_snapshot: Arc::new(Mutex::new(None)),
+            volume: Arc::new(VolumeDucker::new()),
             poller_generation: Arc::new(AtomicU64::new(0)),
             state_since_ms: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp_millis())),
             key_tap: Default::default(),
             language_combo: Default::default(),
             in_app: Default::default(),
+            key_down_at: Default::default(),
         }
     }
 
@@ -637,7 +674,15 @@ impl QuickDictationController {
     }
 
     fn begin_listening(&self) -> Result<()> {
-        self.begin_listening_as(false)
+        // A one-key press started its clock when the key went down.
+        let pressed = self
+            .key_down_at
+            .lock()
+            .ok()
+            .and_then(|mut key_down_at| key_down_at.take())
+            .filter(|at| at.elapsed() < Duration::from_secs(2))
+            .unwrap_or_else(std::time::Instant::now);
+        self.begin_listening_as(false, pressed)
     }
 
     /// Starts a dictation from the app's own window. The text streams to the
@@ -647,7 +692,7 @@ impl QuickDictationController {
         if self.status().state == QuickDictationState::Listening {
             return Err(anyhow!("A dictation is already running."));
         }
-        self.begin_listening_as(true)?;
+        self.begin_listening_as(true, std::time::Instant::now())?;
         Ok(self.translation.current()?.id)
     }
 
@@ -655,7 +700,16 @@ impl QuickDictationController {
         self.finish_dictation()
     }
 
-    fn begin_listening_as(&self, in_app: bool) -> Result<()> {
+    fn begin_listening_as(&self, in_app: bool, pressed: std::time::Instant) -> Result<()> {
+        let result = self.begin_listening_inner(in_app, pressed);
+        if result.is_err() {
+            // A microphone opened ahead of this press is not needed.
+            self.recording_controller.disarm();
+        }
+        result
+    }
+
+    fn begin_listening_inner(&self, in_app: bool, pressed: std::time::Instant) -> Result<()> {
         let _work = crate::shutdown::begin_work(true)?;
         match self.status().state {
             QuickDictationState::Listening => return Ok(()),
@@ -718,13 +772,28 @@ impl QuickDictationController {
             _ => None,
         };
         if let Some(player) = self.sound_player.as_ref().as_ref() {
-            player.prepare_capture(
+            player.begin_capture(
                 settings
                     .as_ref()
                     .map(|settings| settings.sounds_enabled)
                     .unwrap_or(false),
             )?;
         }
+
+        // The microphone opens first: everything else waits until it records.
+        let capture = match self.recording_controller.start() {
+            Ok(capture) => capture,
+            Err(error) => {
+                if let Some(player) = self.sound_player.as_ref().as_ref() {
+                    player.finish_capture(false, true);
+                }
+                // Surface the failure (overlay "Failed" + status + log) so a wedged
+                // microphone never silently swallows the dictation, then reset.
+                let _ = self.set_error(error.to_string());
+                return Err(error);
+            }
+        };
+        crate::sound::announce_when_live(self.sound_player.clone(), &self.recording_controller, pressed);
 
         if settings
             .as_ref()
@@ -739,16 +808,6 @@ impl QuickDictationController {
         }
         self.in_app.store(in_app, Ordering::SeqCst);
 
-        let capture = match self.recording_controller.start() {
-            Ok(capture) => capture,
-            Err(error) => {
-                self.restore_system_volume();
-                // Surface the failure (overlay "Failed" + status + log) so a wedged
-                // microphone never silently swallows the dictation, then reset.
-                let _ = self.set_error(error.to_string());
-                return Err(error);
-            }
-        };
         session.recording_id = capture.current_session_id.clone();
         if let Some(id) = &session.recording_id {
             self.translation.bind_recording(id.clone(), None);
@@ -1673,42 +1732,11 @@ impl QuickDictationController {
     }
 
     fn duck_system_volume(&self) {
-        if self
-            .volume_snapshot
-            .lock()
-            .map(|snapshot| snapshot.is_some())
-            .unwrap_or(true)
-        {
-            return;
-        }
-
-        match system_volume::duck_to_30_percent_of_current() {
-            Ok(Some(snapshot)) => {
-                if let Ok(mut current) = self.volume_snapshot.lock() {
-                    *current = Some(snapshot);
-                } else if let Err(error) = system_volume::restore(snapshot) {
-                    eprintln!("[volume] restore after state lock failure failed: {error:?}");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("[volume] ducking failed: {error:?}");
-            }
-        }
+        self.volume.duck();
     }
 
     fn restore_system_volume(&self) {
-        let snapshot = self
-            .volume_snapshot
-            .lock()
-            .ok()
-            .and_then(|mut snapshot| snapshot.take());
-
-        if let Some(snapshot) = snapshot {
-            if let Err(error) = system_volume::restore(snapshot) {
-                eprintln!("[volume] restore failed: {error:?}");
-            }
-        }
+        self.volume.restore();
     }
 
     /// Stop capture and insertion without re-registering shortcuts.
@@ -1726,6 +1754,8 @@ impl QuickDictationController {
             player.finish_capture(false, true);
         }
         self.restore_system_volume();
+        // Quitting must not leave the Mac ducked.
+        self.volume.flush(Duration::from_secs(2));
         let _ = self.update_status(|status| status.state = QuickDictationState::Idle);
         let _ = self
             .desktop_shell

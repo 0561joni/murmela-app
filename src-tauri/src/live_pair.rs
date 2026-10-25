@@ -24,6 +24,11 @@ pub const MODEL_NAME: &str = "Live pair · Nemotron + Parakeet";
 pub const ENGINE: &str = "fluidaudio-live-pair";
 /// Five minutes of 16 kHz audio, the longest live dictation.
 pub const MAX_SAMPLES: usize = 300 * 16_000;
+/// Silence sent ahead of the captured audio. Speech that starts in the very
+/// first samples (the microphone opened mid-word) costs both models the first
+/// word; a short lead-in gives them the onset back.
+pub const LEAD_SILENCE_MS: usize = 250;
+const LEAD_SILENCE_SAMPLES: usize = LEAD_SILENCE_MS * 16;
 const MAX_MESSAGE: u64 = 1024 * 1024;
 /// A cold CoreML compile takes about 30 s on an M3 Pro (once per macOS build).
 const LOAD_TIMEOUT: Duration = Duration::from_secs(180);
@@ -906,6 +911,66 @@ fn tick(inner: &Inner, woke: bool, now: Instant) {
     }
 }
 
+/// A helper connection requests can be sent over.
+trait Exchange {
+    fn send(
+        &mut self,
+        kind: &str,
+        session: &str,
+        sequence: u64,
+        fields: Value,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Message>;
+}
+
+impl Exchange for Process {
+    fn send(
+        &mut self,
+        kind: &str,
+        session: &str,
+        sequence: u64,
+        fields: Value,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Message> {
+        self.exchange(kind, session, sequence, fields, REQUEST_TIMEOUT, check)
+    }
+}
+
+impl Exchange for Lease {
+    fn send(
+        &mut self,
+        kind: &str,
+        session: &str,
+        sequence: u64,
+        fields: Value,
+        check: &dyn Fn() -> Result<()>,
+    ) -> Result<Message> {
+        self.exchange(kind, session, sequence, fields, REQUEST_TIMEOUT, check)
+    }
+}
+
+/// Opens a session's audio with `LEAD_SILENCE_MS` of silence. Returns the
+/// helper's sample count afterwards.
+fn send_lead_silence(
+    helper: &mut impl Exchange,
+    session: &str,
+    sequence: &mut u64,
+    check: &dyn Fn() -> Result<()>,
+) -> Result<usize> {
+    *sequence += 1;
+    let progress = helper.send(
+        "audio",
+        session,
+        *sequence,
+        json!({"startSample": 0, "samples": vec![0.0f32; LEAD_SILENCE_SAMPLES]}),
+        check,
+    )?;
+    if progress.kind != "progress" || progress.ack_sample != LEAD_SILENCE_SAMPLES {
+        bail!("LIVE_PAIR_PROTOCOL: Inconsistent live preview. Nothing was pasted.");
+    }
+    Ok(LEAD_SILENCE_SAMPLES)
+}
+
 /// Exclusive use of the loaded helper for one dictation.
 struct Lease {
     inner: Arc<Inner>,
@@ -1146,13 +1211,15 @@ fn stream(
         &check,
     )?;
     let chunk = config.chunk_ms as usize * 16;
-    let mut cursor = 0;
+    // `cursor` counts what the helper holds: the lead-in, then capture.
+    let mut cursor = send_lead_silence(lease, &run.id, sequence, &check)?;
     let mut committed = String::new();
     ui(StreamingState::Listening, None, 0);
     loop {
         run.check()?;
         let state = lock(&run.state);
-        let available = state.samples.len() - cursor;
+        let captured = cursor - LEAD_SILENCE_SAMPLES;
+        let available = state.samples.len() - captured;
         let finished = state.finished;
         if available == 0 && finished {
             break;
@@ -1163,7 +1230,7 @@ fn stream(
             continue;
         }
         let count = available.min(chunk);
-        let samples: Vec<f32> = state.samples[cursor..cursor + count]
+        let samples: Vec<f32> = state.samples[captured..captured + count]
             .iter()
             .map(|sample| sample.clamp(-1.0, 1.0))
             .collect();
@@ -1187,8 +1254,8 @@ fn stream(
         }
         committed = progress.committed_text;
         let mut state = lock(&run.state);
-        state.processed = cursor;
-        let lag = ((state.samples.len() - cursor) * 1000 / 16000) as u64;
+        state.processed = cursor - LEAD_SILENCE_SAMPLES;
+        let lag = ((state.samples.len() - state.processed) * 1000 / 16000) as u64;
         let finished = state.finished;
         drop(state);
         ui(
@@ -1322,7 +1389,7 @@ impl HeadlessLivePair {
         language: &str,
         paced: bool,
     ) -> Result<HeadlessRun> {
-        if samples.len() > MAX_SAMPLES {
+        if samples.len() > MAX_SAMPLES - LEAD_SILENCE_SAMPLES {
             bail!("LIVE_PAIR_LIMIT: Live dictation accepts at most five minutes of audio.");
         }
         self.sessions += 1;
@@ -1340,11 +1407,12 @@ impl HeadlessLivePair {
         let mut peak_rss = started.rss_bytes;
         let chunk = self.chunk_ms as usize * 16;
         let mut sequence = 0;
-        let mut cursor = 0;
+        let mut cursor = send_lead_silence(&mut self.process, &id, &mut sequence, &none)?;
         let mut committed = String::new();
         let mut first_text_ms = None;
         loop {
-            let count = feed.next_chunk(cursor, chunk);
+            let captured = cursor - LEAD_SILENCE_SAMPLES;
+            let count = feed.next_chunk(captured, chunk);
             if count == 0 {
                 break;
             }
@@ -1353,7 +1421,7 @@ impl HeadlessLivePair {
                 "audio",
                 &id,
                 sequence,
-                json!({"startSample": cursor, "samples": feed.chunk(cursor, count)}),
+                json!({"startSample": cursor, "samples": feed.chunk(captured, count)}),
                 REQUEST_TIMEOUT,
                 &none,
             )?;

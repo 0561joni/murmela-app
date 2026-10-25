@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -18,6 +18,10 @@ use crate::audio_preprocess::{
 
 const MIN_CAPTURE_PEAK: f32 = 0.003;
 const MIN_CAPTURE_RMS: f32 = 0.0006;
+/// A microphone opened ahead of a shortcut press closes again after this.
+const ARMED_LIFETIME: Duration = Duration::from_secs(3);
+/// Audio from before the press that a recording keeps from an armed microphone.
+const MAX_PREROLL: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -127,16 +131,32 @@ impl CaptureTap {
 struct RecordingWorkerState {
     temp_dir: PathBuf,
     preferred_input_device: Arc<Mutex<Option<String>>>,
+    input_cache: InputCache,
     active: Option<ActiveRecordingSession>,
+    /// Opened when the shortcut key went down, before the press is known to be
+    /// a dictation. `start` adopts it, keeping the audio since the key went down.
+    armed: Option<ArmedSegment>,
     last_status: RecordingStatusResponse,
 }
 
+struct ArmedSegment {
+    segment: ActiveRecordingSegment,
+    preferred: Option<String>,
+    since: Instant,
+}
+
 impl RecordingWorkerState {
-    fn new(temp_dir: PathBuf, preferred_input_device: Arc<Mutex<Option<String>>>) -> Self {
+    fn new(
+        temp_dir: PathBuf,
+        preferred_input_device: Arc<Mutex<Option<String>>>,
+        input_cache: InputCache,
+    ) -> Self {
         Self {
             temp_dir,
             preferred_input_device,
+            input_cache,
             active: None,
+            armed: None,
             last_status: RecordingStatusResponse {
                 state: RecordingOverlayState::Idle,
                 current_session_id: None,
@@ -179,8 +199,18 @@ impl RecordingWorkerState {
             );
         }
         let session_id = Uuid::new_v4().to_string();
-        let segment =
-            create_input_segment(preferred_input_device_name(&self.preferred_input_device))?;
+        let preferred = preferred_input_device_name(&self.preferred_input_device);
+        let segment = match self.armed.take() {
+            Some(armed)
+                if armed.preferred == preferred
+                    && armed.since.elapsed() < ARMED_LIFETIME
+                    && armed.segment.healthy() =>
+            {
+                armed.segment.keep_recent(MAX_PREROLL);
+                armed.segment
+            }
+            _ => open_input_segment(preferred, &self.input_cache)?,
+        };
         let device_name = segment.device_name.clone();
         let input_sample_rate_hz = segment.input_sample_rate_hz;
         let input_channels = segment.input_channels;
@@ -204,6 +234,39 @@ impl RecordingWorkerState {
             channels: Some(input_channels),
         };
         Ok(self.status())
+    }
+
+    /// Opens the microphone ahead of a likely dictation. Failures are left for
+    /// `start` to report.
+    fn arm(&mut self) {
+        if self.active.is_some() {
+            return;
+        }
+        let preferred = preferred_input_device_name(&self.preferred_input_device);
+        if let Some(armed) = self.armed.as_mut().filter(|armed| armed.preferred == preferred) {
+            // Pressed again: the pre-roll starts over.
+            armed.segment.keep_recent(Duration::ZERO);
+            armed.since = Instant::now();
+            return;
+        }
+        self.armed = open_input_segment(preferred.clone(), &self.input_cache)
+            .inspect_err(|error| eprintln!("[audio] could not open the microphone early: {error:#}"))
+            .ok()
+            .map(|segment| ArmedSegment {
+                segment,
+                preferred,
+                since: Instant::now(),
+            });
+    }
+
+    fn expire_armed(&mut self) {
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|armed| armed.since.elapsed() >= ARMED_LIFETIME)
+        {
+            self.armed = None;
+        }
     }
 
     fn stop(&mut self) -> Result<RecordingResult> {
@@ -358,6 +421,8 @@ enum WorkerCommand {
     Stop(Sender<Result<RecordingResult, String>>),
     StopOwned(String, Sender<Result<RecordingResult, String>>),
     Cancel(Sender<Result<RecordingStatusResponse, String>>),
+    Arm,
+    Disarm,
 }
 
 /// Outcome of dispatching a command to the recording worker thread.
@@ -377,16 +442,18 @@ pub struct RecordingController {
     sender: Arc<Mutex<Sender<WorkerCommand>>>,
     temp_dir: PathBuf,
     preferred_input_device: Arc<Mutex<Option<String>>>,
+    input_cache: InputCache,
 }
 
 /// Spawn a fresh worker thread and return the channel that drives it.
 fn spawn_worker(
     temp_dir: PathBuf,
     preferred_input_device: Arc<Mutex<Option<String>>>,
+    input_cache: InputCache,
 ) -> Sender<WorkerCommand> {
     let (sender, receiver) = mpsc::channel::<WorkerCommand>();
     thread::spawn(move || {
-        let mut worker = RecordingWorkerState::new(temp_dir, preferred_input_device);
+        let mut worker = RecordingWorkerState::new(temp_dir, preferred_input_device, input_cache);
         process_worker_commands(&mut worker, receiver);
     });
     sender
@@ -395,17 +462,48 @@ fn spawn_worker(
 impl RecordingController {
     pub fn new(temp_dir: PathBuf) -> Self {
         let preferred_input_device = Arc::new(Mutex::new(None));
-        let sender = spawn_worker(temp_dir.clone(), Arc::clone(&preferred_input_device));
+        let input_cache = InputCache::default();
+        let sender = spawn_worker(
+            temp_dir.clone(),
+            Arc::clone(&preferred_input_device),
+            input_cache.clone(),
+        );
         Self {
             sender: Arc::new(Mutex::new(sender)),
             temp_dir,
             preferred_input_device,
+            input_cache,
         }
     }
 
     pub fn set_preferred_input_device(&self, device_name: Option<String>) {
-        if let Ok(mut preferred) = self.preferred_input_device.lock() {
-            *preferred = device_name;
+        let changed = self
+            .preferred_input_device
+            .lock()
+            .map(|mut preferred| {
+                let changed = *preferred != device_name;
+                *preferred = device_name.clone();
+                changed
+            })
+            .unwrap_or(false);
+        // Also runs at startup, so the first dictation skips CoreAudio's device scan.
+        if changed || self.input_cache.get(&device_name).is_none() {
+            self.input_cache.refresh_in_background(device_name);
+        }
+    }
+
+    /// Opens the microphone now because a dictation is likely to start (the
+    /// shortcut key went down). Never blocks: the event tap calls it.
+    pub fn arm(&self) {
+        if let Ok(sender) = self.sender.lock() {
+            let _ = sender.send(WorkerCommand::Arm);
+        }
+    }
+
+    /// The press was not a dictation: close an armed microphone.
+    pub fn disarm(&self) {
+        if let Ok(sender) = self.sender.lock() {
+            let _ = sender.send(WorkerCommand::Disarm);
         }
     }
 
@@ -417,6 +515,7 @@ impl RecordingController {
         let fresh = spawn_worker(
             self.temp_dir.clone(),
             Arc::clone(&self.preferred_input_device),
+            self.input_cache.clone(),
         );
         if let Ok(mut sender) = self.sender.lock() {
             *sender = fresh;
@@ -548,8 +647,18 @@ impl RecordingController {
 }
 
 fn process_worker_commands(worker: &mut RecordingWorkerState, receiver: Receiver<WorkerCommand>) {
-    while let Ok(command) = receiver.recv() {
+    loop {
+        let command = match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                worker.expire_armed();
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
+            WorkerCommand::Arm => worker.arm(),
+            WorkerCommand::Disarm => worker.armed = None,
             WorkerCommand::Status(response_tx) => {
                 let _ = response_tx.send(worker.status());
             }
@@ -570,10 +679,13 @@ fn process_worker_commands(worker: &mut RecordingWorkerState, receiver: Receiver
                         .as_ref()
                         .ok_or_else(|| anyhow!("No capture segment"))?;
                     if limit {
+                        // The helper's five minutes include the live pair's lead-in.
+                        let millis = 300_000 - crate::live_pair::LEAD_SILENCE_MS;
                         segment.sample_limit.store(
                             segment.input_sample_rate_hz as usize
                                 * segment.input_channels as usize
-                                * 300,
+                                * millis
+                                / 1000,
                             Ordering::SeqCst,
                         );
                     }
@@ -612,23 +724,101 @@ fn process_worker_commands(worker: &mut RecordingWorkerState, receiver: Receiver
     }
 }
 
-fn create_input_segment(preferred_device_name: Option<String>) -> Result<ActiveRecordingSegment> {
+/// The resolved microphone and its format. Looking them up costs about 175 ms
+/// (a device scan for a named microphone, then the format query), so presses
+/// reuse the last result and a background refresh keeps it current.
+#[derive(Clone)]
+struct ResolvedInput {
+    preferred: Option<String>,
+    device: cpal::Device,
+    name: String,
+    config: cpal::SupportedStreamConfig,
+}
+
+#[derive(Clone, Default)]
+struct InputCache(Arc<Mutex<Option<ResolvedInput>>>);
+
+impl InputCache {
+    fn get(&self, preferred: &Option<String>) -> Option<ResolvedInput> {
+        self.0
+            .lock()
+            .ok()?
+            .clone()
+            .filter(|cached| cached.preferred == *preferred)
+    }
+
+    fn store(&self, resolved: Option<ResolvedInput>) {
+        if let Ok(mut cache) = self.0.lock() {
+            *cache = resolved;
+        }
+    }
+
+    fn refresh_in_background(&self, preferred: Option<String>) {
+        let cache = self.clone();
+        let _ = thread::Builder::new()
+            .name("murmela-input-scan".into())
+            .spawn(move || match resolve_input(preferred) {
+                Ok(resolved) => cache.store(Some(resolved)),
+                Err(error) => {
+                    cache.store(None);
+                    eprintln!("[audio] microphone lookup failed: {error:#}");
+                }
+            });
+    }
+}
+
+fn resolve_input(preferred: Option<String>) -> Result<ResolvedInput> {
     let host = cpal::default_host();
-    let device = select_input_device(&host, preferred_device_name.as_deref())?;
-    let device_name = describe_device(&device);
-    let default_config = device
+    let device = select_input_device(&host, preferred.as_deref())?;
+    let config = device
         .default_input_config()
         .context("Failed to resolve default microphone config")?;
-    let input_sample_rate_hz = default_config.sample_rate();
-    let input_channels = default_config.channels();
-    let stream_config: StreamConfig = default_config.clone().into();
+    Ok(ResolvedInput {
+        preferred,
+        name: describe_device(&device),
+        device,
+        config,
+    })
+}
+
+/// Opens the microphone, from the cache when it still names the device that
+/// would be chosen now; on any doubt or failure it resolves afresh.
+fn open_input_segment(preferred: Option<String>, cache: &InputCache) -> Result<ActiveRecordingSegment> {
+    let cached = cache.get(&preferred).filter(|cached| {
+        // The system default can change at any time (headset plugged in);
+        // asking for it is cheap, unlike scanning for a named device.
+        preferred.is_some()
+            || cpal::default_host()
+                .default_input_device()
+                .is_some_and(|device| describe_device(&device) == cached.name)
+    });
+    if let Some(cached) = cached {
+        match create_input_segment(&cached) {
+            Ok(segment) => {
+                // Picks up format changes and replugged devices for the next press.
+                cache.refresh_in_background(preferred);
+                return Ok(segment);
+            }
+            Err(error) => eprintln!("[audio] cached microphone failed, looking it up again: {error:#}"),
+        }
+    }
+    let resolved = resolve_input(preferred)?;
+    let segment = create_input_segment(&resolved);
+    cache.store(segment.is_ok().then_some(resolved));
+    segment
+}
+
+fn create_input_segment(input: &ResolvedInput) -> Result<ActiveRecordingSegment> {
+    let input_sample_rate_hz = input.config.sample_rate();
+    let input_channels = input.config.channels();
+    let stream_config: StreamConfig = input.config.clone().into();
     let samples = Arc::new(Mutex::new(Vec::new()));
     let sample_limit = Arc::new(AtomicUsize::new(usize::MAX));
     let input_level = Arc::new(Mutex::new(0.0));
     let error_message = Arc::new(Mutex::new(None));
     let stream = build_input_stream(
-        &device,
-        default_config.sample_format(),
+        &input.device,
+        input.config.sample_format(),
         &stream_config,
         Arc::clone(&samples),
         sample_limit.clone(),
@@ -637,7 +827,7 @@ fn create_input_segment(preferred_device_name: Option<String>) -> Result<ActiveR
     )?;
     stream.play().context("Failed to start microphone stream")?;
     Ok(ActiveRecordingSegment {
-        device_name,
+        device_name: input.name.clone(),
         input_sample_rate_hz,
         input_channels,
         samples,
@@ -646,6 +836,29 @@ fn create_input_segment(preferred_device_name: Option<String>) -> Result<ActiveR
         error_message,
         stream,
     })
+}
+
+impl ActiveRecordingSegment {
+    fn healthy(&self) -> bool {
+        self.error_message.lock().map(|error| error.is_none()).unwrap_or(false)
+    }
+
+    /// Drops all but the most recent `keep` of captured audio.
+    fn keep_recent(&self, keep: Duration) {
+        if let Ok(mut samples) = self.samples.lock() {
+            let excess =
+                excess_samples(samples.len(), self.input_sample_rate_hz, self.input_channels, keep);
+            samples.drain(..excess);
+        }
+    }
+}
+
+/// How many interleaved samples to drop from the front of `len` so that at
+/// most `keep` remains, in whole frames.
+fn excess_samples(len: usize, rate: u32, channels: u16, keep: Duration) -> usize {
+    let frame = channels.max(1) as usize;
+    let keep = (keep.as_secs_f64() * rate as f64) as usize * frame;
+    len.saturating_sub(keep).div_ceil(frame) * frame
 }
 
 pub fn list_input_devices() -> Result<Vec<InputDeviceOption>> {
@@ -938,6 +1151,16 @@ mod tests {
         assert!(tap.read_since(8, 10).is_err());
         *tap.error.lock().unwrap() = Some("Device disconnected".into());
         assert!(tap.read_since(0, 1).is_err());
+    }
+
+    #[test]
+    fn preroll_keeps_whole_recent_frames() {
+        let keep = Duration::from_millis(10);
+        // 48 kHz stereo: 10 ms is 480 frames, 960 samples.
+        assert_eq!(excess_samples(2000, 48_000, 2, keep), 1040);
+        assert_eq!(excess_samples(2001, 48_000, 2, keep), 1042);
+        assert_eq!(excess_samples(900, 48_000, 2, keep), 0);
+        assert_eq!(excess_samples(900, 48_000, 2, Duration::ZERO), 900);
     }
 
     // These cover the controller<->worker dispatch and the respawn machinery

@@ -1,5 +1,11 @@
 # Release notes
 
+## Murmela 1.2.2: your first word, every time
+
+- Dictation records from the moment you press the shortcut. Before, the microphone took about a second to open, so the first word or two were often lost or wrong.
+- The start sound now plays only once Murmela is really recording, and it is shorter. If you are already speaking when you press, it stays quiet so it does not land on your first word.
+- Dictation starts and finishes faster when volume ducking is on.
+
 ## Murmela 1.2.1: steadier file transcription
 
 - The progress bar for a file starts moving right away and says what Murmela is doing: loading the model, finding pauses, transcribing, matching speakers. The time left is more accurate too.

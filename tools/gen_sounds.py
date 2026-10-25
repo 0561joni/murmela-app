@@ -13,7 +13,8 @@ Design: soft "wooden tap" cues.
 - Each tap is a short marimba-like strike: 2 ms raised-cosine attack, a
   fundamental plus overtones at 3.93x and 9.2x that fade within a few
   milliseconds, so it knocks instead of rings.
-- `listen_start`: rising pair A4 -> D5; `listen_stop`: falling pair D5 -> A4;
+- `listen_start`: one short D5 tap (120 ms; it plays into the open microphone
+  once recording has begun); `listen_stop`: falling pair D5 -> A4;
   `complete`: soft A-major arpeggio; `error`: low falling pair E4 -> C4.
 - A one-pole low-pass around 3.5 kHz rounds off the strike; peak 0.10 of full
   scale keeps it quiet for many dictations a day.
@@ -35,20 +36,22 @@ PARTIALS = [(1.0, 1.0, 0.060), (3.93, 0.22, 0.012), (9.2, 0.05, 0.004)]
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = REPO_ROOT / "src-tauri" / "assets" / "sounds"
 
+START_TAP_SECONDS = 0.12
+
 CUES = {
-    "listen_start.wav": [(0.0, 440.00, 0.85), (0.075, 587.33, 1.0)],
+    "listen_start.wav": [(0.0, 587.33, 1.0)],
     "listen_stop.wav": [(0.0, 587.33, 1.0), (0.075, 440.00, 0.8)],
     "complete.wav": [(0.0, 440.00, 0.8), (0.07, 554.37, 0.85), (0.14, 659.25, 0.9)],
     "error.wav": [(0.0, 329.63, 1.0), (0.11, 261.63, 0.9)],
 }
 
 
-def render(taps: list[tuple[float, float, float]]) -> list[float]:
-    length = max(int((offset + TAP_SECONDS) * SAMPLE_RATE) for offset, _, _ in taps)
+def render(taps: list[tuple[float, float, float]], tap_seconds: float = TAP_SECONDS) -> list[float]:
+    length = max(int((offset + tap_seconds) * SAMPLE_RATE) for offset, _, _ in taps)
     out = [0.0] * length
     for offset, frequency, loudness in taps:
         start = int(offset * SAMPLE_RATE)
-        for index in range(int(TAP_SECONDS * SAMPLE_RATE)):
+        for index in range(int(tap_seconds * SAMPLE_RATE)):
             t = index / SAMPLE_RATE
             attack = min(t / 0.002, 1.0)
             attack = 0.5 - 0.5 * math.cos(attack * math.pi)
@@ -87,7 +90,7 @@ def write_wav(path: Path, samples: list[float]) -> None:
 
 def main() -> None:
     for filename, taps in CUES.items():
-        samples = render(taps)
+        samples = render(taps, START_TAP_SECONDS if filename == "listen_start.wav" else TAP_SECONDS)
         out = OUT_DIR / filename
         write_wav(out, samples)
         print(f"wrote {out} ({len(samples) / SAMPLE_RATE * 1000:.0f} ms)")

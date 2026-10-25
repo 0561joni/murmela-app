@@ -29,13 +29,16 @@ pub enum FeedbackCue {
 enum SoundCommand {
     Shutdown,
     Play(FeedbackCue),
-    PrepareCapture(bool, SyncSender<()>),
+    /// The microphone of capture `generation` delivers audio: play the start cue.
+    Ready(u64),
 }
 
 #[derive(Default)]
 struct FeedbackPolicy {
     capturing: bool,
     capture_cues: bool,
+    announced: bool,
+    generation: u64,
     seen: HashSet<String>,
     order: VecDeque<String>,
     last_outcome: Option<Instant>,
@@ -102,36 +105,44 @@ impl SoundPlayer {
         }
     }
 
-    /// Drain the boundary cue before opening capture. No feedback is queued
-    /// while a microphone is open, including during a microphone test.
-    pub fn prepare_capture(&self, enabled: bool) -> Result<()> {
-        if let Ok(mut policy) = self.policy.lock() {
+    /// Gates feedback before the microphone opens. No feedback is queued while
+    /// a microphone is open, including during a microphone test, except the
+    /// start cue from `announce_ready`.
+    pub fn begin_capture(&self, enabled: bool) -> Result<()> {
+        let generation = {
+            let mut policy = self
+                .policy
+                .lock()
+                .map_err(|_| anyhow!("Sound feedback unavailable"))?;
             if policy.capturing {
                 return Err(anyhow!("A recording is already active."));
             }
             policy.capturing = true;
             policy.capture_cues = enabled;
-        }
-        if let Ok(mut playback) = self.playback.lock() {
-            playback.muted = false;
-        }
-        let (tx, rx) = mpsc::sync_channel(1);
-        if self
-            .tx
-            .send(SoundCommand::PrepareCapture(enabled, tx))
-            .is_ok()
-        {
-            let _ = rx.recv_timeout(Duration::from_millis(800));
-        }
-        // Also gate the output callback: a failed audio driver must never play
-        // a delayed boundary cue into an already-open microphone.
+            policy.announced = false;
+            policy.generation += 1;
+            policy.generation
+        };
         if let Ok(mut playback) = self.playback.lock() {
             playback.muted = true;
+            playback.mute_when_drained = false;
             playback.samples.clear();
             playback.position = 0;
-            playback.completion.take();
+            playback.generation = generation;
         }
         Ok(())
+    }
+
+    /// The microphone delivers audio: tell the speaker so with the start cue.
+    /// The microphone hears the cue; it is kept short because, on top of a
+    /// first syllable, it can cost the speech models that word.
+    pub fn announce_ready(&self) {
+        if let Ok(mut policy) = self.policy.lock() {
+            if policy.capturing && policy.capture_cues && !policy.announced {
+                policy.announced = true;
+                let _ = self.tx.send(SoundCommand::Ready(policy.generation));
+            }
+        }
     }
 
     /// Call only after capture has stopped, so the stop tone cannot enter audio.
@@ -144,6 +155,8 @@ impl SoundPlayer {
                 playback.samples.clear();
                 playback.position = 0;
                 playback.muted = false;
+                playback.mute_when_drained = false;
+                playback.generation = 0;
             }
             if play {
                 let _ = self.tx.send(SoundCommand::Play(FeedbackCue::Stop));
@@ -198,11 +211,104 @@ pub fn notify(app: &tauri::AppHandle, cue: FeedbackCue, key: &str) {
     }
 }
 
+/// Audio the start-cue decision looks at: the first this much the microphone
+/// captured, which with an armed microphone begins before the press.
+const CUE_CHECK: Duration = Duration::from_millis(80);
+/// A 20 ms frame at least this loud (RMS) is speech. Silence on the built-in
+/// microphone stays below 0.004; the first 80 ms of speech reach 0.0054 in 95 %
+/// of test recordings.
+const SPEECH_RMS: f32 = 0.006;
+
+/// Whether `interleaved` audio already contains speech: a 20 ms frame louder
+/// than `SPEECH_RMS` and four times the quietest frame (a noisy room raises
+/// the bar). Frames of warm-up zeros are ignored.
+pub fn speech_started(interleaved: &[f32], rate: u32, channels: u16) -> bool {
+    let frame = (rate as usize / 50).max(1) * channels.max(1) as usize;
+    let levels: Vec<f32> = interleaved
+        .chunks_exact(frame)
+        .map(|chunk| (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt())
+        .filter(|rms| *rms > 1e-4)
+        .collect();
+    let quietest = levels.iter().copied().fold(f32::MAX, f32::min);
+    let threshold = SPEECH_RMS.max(quietest * 4.0);
+    levels.iter().any(|rms| *rms >= threshold)
+}
+
+/// Waits for the microphone's first `CUE_CHECK` of audio, then plays the start
+/// cue, so the cue means "recording now" rather than "about to record". If
+/// you are already speaking (an armed microphone heard you before the press
+/// was confirmed), the cue is skipped: it would land on your first word, which
+/// costs the speech models that word. Logs how long
+/// the press took to reach the microphone. `pressed` is when the shortcut went
+/// down.
+pub fn announce_when_live(
+    player: Arc<Option<SoundPlayer>>,
+    recording: &crate::audio_capture::RecordingController,
+    pressed: Instant,
+) {
+    let opened_ms = pressed.elapsed().as_millis();
+    let tap = match recording.observe_tap() {
+        Ok(tap) => tap,
+        Err(error) => {
+            eprintln!("[dictation] start cue unavailable: {error:#}");
+            return;
+        }
+    };
+    let spawned = thread::Builder::new()
+        .name("murmela-mic-ready".into())
+        .spawn(move || {
+            let channels = tap.channels.max(1) as usize;
+            let check = (CUE_CHECK.as_secs_f64() * tap.rate as f64) as usize * channels;
+            let deadline = Instant::now() + Duration::from_millis(1500);
+            let mut live = None;
+            let count = loop {
+                let count = tap.sample_count();
+                if count > 0 && live.is_none() {
+                    // First audio: the microphone records from here (or earlier).
+                    live = Some((Instant::now(), count / channels));
+                }
+                if count >= check || Instant::now() >= deadline {
+                    break count;
+                }
+                thread::sleep(Duration::from_millis(2));
+            };
+            let Some((live_at, frames)) = live else {
+                eprintln!("[dictation] start timing: no microphone audio after 1.5 s; start cue skipped");
+                return;
+            };
+            let speaking = tap
+                .read_since(0, check)
+                .map(|audio| speech_started(&audio, tap.rate, tap.channels))
+                .unwrap_or(false);
+            if !speaking {
+                if let Some(player) = player.as_ref() {
+                    player.announce_ready();
+                }
+            }
+            let live_ms = live_at.duration_since(pressed).as_secs_f64() * 1000.0;
+            // Audio already buffered (an armed microphone) began before then.
+            let buffered_ms = frames as f64 * 1000.0 / tap.rate.max(1) as f64;
+            eprintln!(
+                "[dictation] start timing press_to_capture_ms={opened_ms} press_to_mic_live_ms={live_ms:.0} audio_from_press_ms={:.0} press_to_cue_ms={} cue={}",
+                live_ms - buffered_ms,
+                pressed.elapsed().as_millis(),
+                if speaking { "skipped_speech" } else if count >= check { "played" } else { "played_short_check" },
+            );
+        });
+    if let Err(error) = spawned {
+        eprintln!("[dictation] start cue unavailable: {error}");
+    }
+}
+
 struct PlaybackState {
     samples: Vec<f32>,
     position: usize,
-    completion: Option<SyncSender<()>>,
     muted: bool,
+    /// Set while the start cue plays into an open microphone: once it has
+    /// played, the output is gated again.
+    mute_when_drained: bool,
+    /// The capture the gate belongs to; 0 outside a capture.
+    generation: u64,
 }
 
 impl PlaybackState {
@@ -210,8 +316,9 @@ impl PlaybackState {
         Self {
             samples: Vec::new(),
             position: 0,
-            completion: None,
             muted: false,
+            mute_when_drained: false,
+            generation: 0,
         }
     }
 
@@ -232,8 +339,9 @@ impl PlaybackState {
             self.position += 1;
             Some(s)
         } else {
-            if let Some(done) = self.completion.take() {
-                let _ = done.try_send(());
+            if self.mute_when_drained {
+                self.mute_when_drained = false;
+                self.muted = true;
             }
             None
         }
@@ -341,24 +449,15 @@ fn run_sound_thread(
                     };
                     playback.enqueue(samples);
                 }
-                SoundCommand::PrepareCapture(enabled, done) => {
-                    if playback.muted {
-                        let _ = done.try_send(());
+                SoundCommand::Ready(generation) => {
+                    if playback.generation != generation {
                         continue;
                     }
                     playback.samples.clear();
                     playback.position = 0;
-                    if let Some(previous) = playback.completion.take() {
-                        let _ = previous.try_send(());
-                    }
-                    if enabled {
-                        playback.enqueue(&start_samples);
-                    }
-                    // Output-buffer tail is silence before capture begins.
-                    playback
-                        .samples
-                        .extend(std::iter::repeat_n(0.0, device_sample_rate as usize / 12));
-                    playback.completion = Some(done);
+                    playback.enqueue(&start_samples);
+                    playback.muted = false;
+                    playback.mute_when_drained = true;
                 }
             }
         }
@@ -452,6 +551,11 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>> {
     Ok(samples)
 }
 
+/// Length of the start cue, which plays while the microphone records.
+const START_TAP_SECONDS: f32 = 0.12;
+/// Pitch of the start cue.
+const START_TAP_HZ: f32 = 587.33;
+
 /// Soft "wooden tap" cues: short marimba-like strikes, rising to start, falling
 /// to stop. Low pitches, a rounded attack and fast-fading overtones keep them
 /// warm and unobtrusive for many dictations a day. `tools/gen_sounds.py` renders
@@ -459,23 +563,27 @@ fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>> {
 fn cue_samples(cue: FeedbackCue, rate: u32) -> Vec<f32> {
     // (start offset in s, fundamental in Hz, relative loudness)
     let taps: &[(f32, f32, f32)] = match cue {
-        FeedbackCue::Start => &[(0.0, 440.00, 0.85), (0.075, 587.33, 1.0)],
+        // One short tap: it plays into the open microphone, so it stays brief.
+        FeedbackCue::Start => &[(0.0, START_TAP_HZ, 1.0)],
         FeedbackCue::Stop => &[(0.0, 587.33, 1.0), (0.075, 440.00, 0.8)],
         FeedbackCue::Complete => &[(0.0, 440.00, 0.8), (0.07, 554.37, 0.85), (0.14, 659.25, 0.9)],
         FeedbackCue::Error => &[(0.0, 329.63, 1.0), (0.11, 261.63, 0.9)],
     };
-    const TAP_SECONDS: f32 = 0.22;
+    let tap_seconds: f32 = match cue {
+        FeedbackCue::Start => START_TAP_SECONDS,
+        _ => 0.22,
+    };
     const PEAK: f32 = 0.10;
     let rate_f = rate as f32;
     let length = taps
         .iter()
-        .map(|(offset, _, _)| ((offset + TAP_SECONDS) * rate_f) as usize)
+        .map(|(offset, _, _)| ((offset + tap_seconds) * rate_f) as usize)
         .max()
         .unwrap_or(0);
     let mut samples = vec![0.0f32; length];
     for &(offset, frequency, loudness) in taps {
         let start = (offset * rate_f) as usize;
-        let count = (TAP_SECONDS * rate_f) as usize;
+        let count = (tap_seconds * rate_f) as usize;
         for index in 0..count {
             let t = index as f32 / rate_f;
             // 2 ms raised-cosine attack: no click, still a definite "tap".
@@ -546,18 +654,42 @@ mod tests {
     }
 
     #[test]
-    fn boundary_completion_is_acknowledged_only_after_samples_are_drained() {
-        let (tx, rx) = mpsc::sync_channel(1);
+    fn start_cue_gates_the_output_again_once_played() {
         let mut playback = PlaybackState::new();
-        playback.enqueue(&[0.1, 0.0, 0.0]);
-        playback.completion = Some(tx);
-        assert!(rx.try_recv().is_err());
+        playback.enqueue(&[0.1, 0.2]);
+        playback.mute_when_drained = true;
         assert_eq!(playback.pull(), Some(0.1));
-        assert_eq!(playback.pull(), Some(0.0));
-        assert!(rx.try_recv().is_err());
-        assert_eq!(playback.pull(), Some(0.0));
+        assert_eq!(playback.pull(), Some(0.2));
         assert_eq!(playback.pull(), None);
-        assert!(rx.try_recv().is_ok());
+        assert!(playback.muted && !playback.mute_when_drained);
+        playback.enqueue(&[0.3]);
+        assert_eq!(playback.pull(), None);
+    }
+
+    #[test]
+    fn speech_check_ignores_silence_and_warm_up_but_hears_a_voice() {
+        let rate = 48_000;
+        let noise = |level: f32| -> Vec<f32> {
+            (0..rate as usize / 10)
+                .map(|i| level * ((i as f32 * 0.7).sin() + (i as f32 * 1.3).cos()) * 0.7)
+                .collect()
+        };
+        let mut warm_up = vec![0.0; rate as usize / 25];
+        warm_up.extend(noise(0.002));
+        assert!(!speech_started(&warm_up, rate, 1));
+        let mut voice = noise(0.002);
+        voice.extend(noise(0.02));
+        assert!(speech_started(&voice, rate, 1));
+        // In a noisy room the same voice must stand out from the floor.
+        assert!(!speech_started(&noise(0.01), rate, 1));
+        let stereo: Vec<f32> = voice.iter().flat_map(|s| [*s, *s]).collect();
+        assert!(speech_started(&stereo, rate, 2));
+    }
+
+    #[test]
+    fn start_cue_is_a_single_brief_tap() {
+        let samples = cue_samples(FeedbackCue::Start, 48_000);
+        assert!(samples.len() <= (48_000.0 * START_TAP_SECONDS) as usize);
     }
 
     #[test]

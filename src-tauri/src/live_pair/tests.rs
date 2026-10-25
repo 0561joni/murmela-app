@@ -209,12 +209,13 @@ fn a_session_streams_a_growing_preview_and_pastes_the_final_text() {
         .iter()
         .filter_map(|(_, text)| text.as_ref().map(|text| text.committed.clone()))
         .collect();
-    assert_eq!(previews, ["", "alpha", "alpha beta", "alpha beta gamma"]);
+    // The lead-in silence is the first audio frame, so capture starts one word in.
+    assert_eq!(previews, ["alpha", "alpha beta", "alpha beta gamma", "alpha beta gamma delta"]);
     assert_eq!(overlay.last().unwrap().0, StreamingState::Finalizing);
     // Loaded once on demand, then only session requests.
     assert_eq!(
         fake.requests(),
-        ["load", "warmup", "start", "audio", "audio", "audio", "audio", "finish"]
+        ["load", "warmup", "start", "audio", "audio", "audio", "audio", "audio", "finish"]
     );
     // The models stay resident for the next press: no second load.
     let (result, _) = run(&pair, &config, &session(100));

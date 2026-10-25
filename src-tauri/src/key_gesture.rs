@@ -229,6 +229,11 @@ pub mod tap {
         fn dictating(&self) -> bool;
         /// Whether → / ← while the key is held should switch the language.
         fn language_combo_enabled(&self) -> bool;
+        /// `true`: the key is down and may become push-to-talk, so the
+        /// microphone can open now. `false`: it did not (a tap or another
+        /// combination). Never called for a press that started dictating.
+        /// Must not block: it runs on the event tap.
+        fn prime(&self, _likely: bool) {}
     }
 
     struct Shared {
@@ -239,6 +244,18 @@ pub mod tap {
         swallowed: Mutex<Vec<i64>>,
         tap: Mutex<usize>,
         sink: Box<dyn Sink>,
+        /// Whether the sink was told a hold may follow.
+        primed: AtomicBool,
+    }
+
+    impl Shared {
+        /// Tells the sink whether the press may still become push-to-talk.
+        fn prime(&self, waiting: bool) {
+            let was = self.primed.swap(waiting, Ordering::SeqCst);
+            if waiting != was {
+                self.sink.prime(waiting);
+            }
+        }
     }
 
     /// The running tap. Change the watched key with `set_key`; `None` pauses it.
@@ -256,6 +273,7 @@ pub mod tap {
                 swallowed: Mutex::new(Vec::new()),
                 tap: Mutex::new(0),
                 sink: Box::new(sink),
+                primed: AtomicBool::new(false),
             });
             let (ready_tx, ready_rx) = std::sync::mpsc::channel();
             let context = Arc::into_raw(shared.clone()) as usize;
@@ -302,6 +320,8 @@ pub mod tap {
                         .ok()
                         .and_then(|mut machine| machine.waiting_for_hold().then(|| machine.tick(Instant::now())).flatten());
                     if let Some(action) = action {
+                        // The dictation now owns the opened microphone.
+                        ticker.primed.store(false, Ordering::SeqCst);
                         ticker.sink.act(action);
                     }
                 })?;
@@ -362,13 +382,19 @@ pub mod tap {
                     return event; // Repeated flag state.
                 }
                 let dictating = shared.sink.dictating();
-                let action = shared.machine.lock().ok().and_then(|mut machine| {
-                    if pressed {
-                        machine.key_down(now, dictating)
-                    } else {
-                        machine.key_up(now)
-                    }
-                });
+                let (action, waiting) = shared
+                    .machine
+                    .lock()
+                    .map(|mut machine| {
+                        let action = if pressed {
+                            machine.key_down(now, dictating)
+                        } else {
+                            machine.key_up(now)
+                        };
+                        (action, machine.waiting_for_hold())
+                    })
+                    .unwrap_or((None, false));
+                shared.prime(waiting);
                 if let Some(action) = action {
                     shared.sink.act(action);
                 }
@@ -380,11 +406,15 @@ pub mod tap {
                 if repeat && arrow.is_some() {
                     return std::ptr::null_mut(); // Holding the arrow must not keep cycling.
                 }
-                let (actions, swallow) = shared
+                let (actions, swallow, waiting) = shared
                     .machine
                     .lock()
-                    .map(|mut machine| machine.other_key(now, arrow))
+                    .map(|mut machine| {
+                        let (actions, swallow) = machine.other_key(now, arrow);
+                        (actions, swallow, machine.waiting_for_hold())
+                    })
                     .unwrap_or_default();
+                shared.prime(waiting);
                 for action in actions {
                     shared.sink.act(action);
                 }
