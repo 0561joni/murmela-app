@@ -1,4 +1,5 @@
 import { Murmelmeter } from "../components/Murmelmeter";
+import { HelpHint } from "../components/HelpHint";
 import { TranslationResult } from "../components/TranslationResult";
 import { OUTPUT_MODES } from "../lib/translationApi";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
@@ -197,6 +198,16 @@ export function DictateScreen(props: Props) {
         {props.outputState ? (
           <div className="output-picker">
             <label htmlFor="dictation-output-language">Output language</label>
+            <HelpHint title="Output language">
+              <p>
+                <strong>Original</strong> pastes your words in the language you speak, untranslated.
+              </p>
+              <p>
+                Pick another language and Murmela translates what you say before pasting it. From any app, the
+                language shortcut switches without opening this window. After a minute without dictating, it goes back
+                to Original.
+              </p>
+            </HelpHint>
             <select
               id="dictation-output-language"
               value={props.outputState.outputMode}
@@ -249,7 +260,9 @@ export function DictateScreen(props: Props) {
               </Button>
             </div>
           ) : null}
-          {!readiness.shortcutRegistered ? (
+          {/* The Accessibility row covers a 🌐 / Right ⌥ key that waits for it. */}
+          {!readiness.shortcutRegistered &&
+          !(readiness.accessibilityRequired && !readiness.accessibilityGranted) ? (
             <div className="setup-row">
               <span>
                 Set a keyboard shortcut to dictate from any app. The record button works without one.

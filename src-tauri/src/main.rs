@@ -1307,7 +1307,8 @@ fn get_dictation_readiness(
             .map_err(|error| error.to_string())?,
         shortcut_registered: status.is_registered,
         auto_paste_enabled: auto_paste,
-        accessibility_required: auto_paste,
+        // The 🌐 / Right ⌥ listener needs it too.
+        accessibility_required: auto_paste || key_gesture::is_key_gesture(&settings.shortcut),
         accessibility_granted: insertion::accessibility_trusted(),
     })
 }

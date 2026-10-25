@@ -132,6 +132,12 @@ function props(overrides: Partial<FirstRunSetupProps> = {}): FirstRunSetupProps 
   };
 }
 
+/** Leaves the first step, where an installed engine needs no download. */
+async function passNeeds() {
+  fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+  await screen.findByRole("heading", { name: "Translate as you speak" });
+}
+
 describe("FirstRunSetup", () => {
   beforeEach(() => {
     api.catalog = [whisper, moss, qwen, livePair];
@@ -155,12 +161,21 @@ describe("FirstRunSetup", () => {
     }));
   });
 
-  it("downloads the recommended engine without asking and uses it once installed", async () => {
+  it("explains what is needed and downloads the engine only after the user agrees", async () => {
     const current = props();
     render(<FirstRunSetup {...current} />);
-    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
-    expect(screen.queryByRole("radiogroup", { name: "Dictation engine" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "What Murmela needs" })).toBeTruthy();
+    expect(screen.getByText("Microphone access")).toBeTruthy();
+    const engines = await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    await waitFor(() => {
+      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.find((radio) => radio.checked)?.value).toBe(livePair.id);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.startModelDownload).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: /^Download .+ and continue$/ }));
     await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(livePair.id));
+    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
     expect(api.startModelDownload).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(/Downloading Live dictation/)).toBeTruthy();
     expect(current.onUseModel).not.toHaveBeenCalled();
@@ -179,10 +194,25 @@ describe("FirstRunSetup", () => {
     await waitFor(() => expect(current.onUseModel).toHaveBeenCalledWith(livePair.id));
   });
 
-  it("falls back to a smaller engine when the recommended one does not fit", async () => {
+  it("preselects a smaller engine when the recommended one does not fit", async () => {
     api.freeSpace = 2_000_000_000;
     render(<FirstRunSetup {...props()} />);
+    const engines = await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    await waitFor(() => {
+      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.find((radio) => radio.checked)?.value).toBe(whisper.id);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Download .+ and continue$/ }));
     await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(whisper.id));
+  });
+
+  it("downloads nothing when the user picks Not now", async () => {
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
+    expect(api.startModelDownload).not.toHaveBeenCalled();
   });
 
   it("uses an installed engine without downloading", async () => {
@@ -196,7 +226,8 @@ describe("FirstRunSetup", () => {
   it("keeps the current engine when dictation already works", async () => {
     const current = props({ readiness: { ...readiness, shortcutModelReady: true } });
     render(<FirstRunSetup {...current} />);
-    expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "What Murmela needs" })).toBeTruthy();
+    expect(screen.getByText("Already installed.")).toBeTruthy();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(api.startModelDownload).not.toHaveBeenCalled();
     expect(current.onUseModel).not.toHaveBeenCalled();
@@ -206,7 +237,8 @@ describe("FirstRunSetup", () => {
     api.catalog = [{ ...qwen, installed: true }];
     const current = props();
     render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /No, just dictate/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Allow microphone" }));
     expect(current.onRequestMicrophone).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Allow pasting" }));
@@ -220,7 +252,8 @@ describe("FirstRunSetup", () => {
       quickStatus: quick({ lastTranscriptId: "old", lastTranscriptText: "Old words", state: "inserted" }),
     });
     const { rerender } = render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /No, just dictate/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     expect(await screen.findByText(/^Hold/)).toBeTruthy();
     expect(screen.getByText("⌘+⇧+Space")).toBeTruthy();
@@ -240,6 +273,8 @@ describe("FirstRunSetup", () => {
     api.catalog = [{ ...qwen, installed: true }, gemma4b, gemma12b];
     const current = props();
     render(<FirstRunSetup {...current} />);
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
     expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Translation engine" })).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: "Français" }));
@@ -265,6 +300,8 @@ describe("FirstRunSetup", () => {
     api.catalog = [{ ...qwen, installed: true }];
     const current = props();
     render(<FirstRunSetup {...current} />);
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Polski" }));
     expect(screen.getByText(/needs an Apple Silicon Mac/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -277,6 +314,8 @@ describe("FirstRunSetup", () => {
     api.catalog = [{ ...qwen, installed: true }, { ...gemma12b, installed: true }];
     const current = props();
     render(<FirstRunSetup {...current} />);
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     await waitFor(() =>
@@ -294,7 +333,8 @@ describe("FirstRunSetup", () => {
       quickStatus: quick({ registeredShortcut: "Fn" }),
     });
     const { rerender } = render(<FirstRunSetup {...current} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Skip translation" }));
+    await passNeeds();
+    fireEvent.click(await screen.findByRole("button", { name: /No, just dictate/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
     const practice = await screen.findByRole("list", { name: "Practice" });
     const items = () => Array.from(practice.querySelectorAll("li")).map((item) => item.className);
@@ -324,6 +364,21 @@ describe("FirstRunSetup", () => {
     api.outputListener?.({ ...api.outputState!, outputMode: "en" });
     await waitFor(() => expect(items()).toEqual(["is-done", "is-done", "is-done"]));
     expect(practice.textContent).toContain("Now: English");
+  });
+
+  it("asks first whether to translate and skips the language setup on No", async () => {
+    api.catalog = [{ ...qwen, installed: true }, gemma4b, gemma12b];
+    render(<FirstRunSetup {...props()} />);
+    await passNeeds();
+    expect(screen.getByText("Do you want Murmela to translate what you dictate?")).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: "Deutsch" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Yes, translate too/ }));
+    expect(await screen.findByRole("checkbox", { name: "Deutsch" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip this step" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(await screen.findByRole("button", { name: /No, just dictate/ }));
+    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+    expect(api.startModelDownload).not.toHaveBeenCalled();
   });
 
   it("can be skipped at any step", async () => {

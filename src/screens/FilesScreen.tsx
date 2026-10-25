@@ -7,6 +7,7 @@ import {
   Progress,
 } from "../components/Feedback";
 import { AppIcon } from "../components/IconButton";
+import { HelpHint } from "../components/HelpHint";
 import { copyTextToClipboard } from "../lib/api";
 import { copyReview } from "../lib/reviewApi";
 import { readableError, formatBytes, formatDuration, formatListDuration } from "../lib/formatting";
@@ -108,10 +109,26 @@ export function FilesScreen(props: Props) {
       ) : null}
       {props.showSpeakerOptions ? (
         <div className="files-speaker-options">
-          <label htmlFor="speaker-count-mode">Speakers</label>
+          <span className="files-speaker-label">
+            <label htmlFor="speaker-count-mode">Who's speaking</label>
+            <HelpHint title="Speaker labels">
+              <p>
+                In recordings with several people, Murmela marks each passage with the person talking, so you can see
+                who said what.
+              </p>
+              <p className="help-example">
+                Speaker 1 · 00:12 — Shall we start with the budget?
+                <br />
+                Speaker 2 · 00:15 — Yes, I brought the numbers.
+              </p>
+              <p>
+                Leave it on automatic unless you know exactly how many people talk. You can name the speakers in the
+                Library afterwards.
+              </p>
+            </HelpHint>
+          </span>
           <select
             id="speaker-count-mode"
-            aria-label="Known speaker count"
             value={props.speakerCountHint === null ? "auto" : "estimate"}
             onChange={(event) =>
               props.onSpeakerCountHintChange(
@@ -119,8 +136,8 @@ export function FilesScreen(props: Props) {
               )
             }
           >
-            <option value="auto">Detect automatically</option>
-            <option value="estimate">Exact number</option>
+            <option value="auto">Count people automatically</option>
+            <option value="estimate">I know how many people</option>
           </select>
           {props.speakerCountHint !== null ? (
             <input
@@ -136,7 +153,7 @@ export function FilesScreen(props: Props) {
               }
             />
           ) : null}
-          <span className="muted">Applies to files you add next. Use an exact number only when you’re sure.</span>
+          <span className="muted">Labels each passage with the person talking. Applies to files you add next.</span>
         </div>
       ) : null}
       {props.items.length === 0 || props.dragging ? (

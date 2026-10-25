@@ -1582,12 +1582,12 @@ export function App() {
                   }
                   speakerMode={
                     resolvedFileModel?.capabilities?.nativeDiarization
-                      ? "Speakers: built into model"
+                      ? "Speaker labels: built into engine"
                       : pro && settings?.fileDiarizationEnabled
                         ? speakerModelReady === false
-                          ? "Speakers: on · model not ready"
-                          : "Speakers: on"
-                        : "Speakers: off"
+                          ? "Speaker labels: on · not ready yet"
+                          : "Speaker labels: on"
+                        : "Speaker labels: off"
                   }
                   onOpenSpeakerSettings={() => {
                     setSettingsSection("models");

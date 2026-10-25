@@ -590,6 +590,12 @@ impl QuickDictationController {
                 status.is_registered = false;
                 status.last_error_message = Some(error.to_string());
             })?;
+            // Missing Accessibility is the normal state of a fresh install,
+            // not a failure: the app asks for it, and readiness polling
+            // starts the key listener once it is granted.
+            if !crate::insertion::accessibility_trusted() {
+                return Ok(self.status());
+            }
             return Err(error);
         }
         *self

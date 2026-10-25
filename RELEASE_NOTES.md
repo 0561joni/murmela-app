@@ -1,5 +1,13 @@
 # Release notes
 
+## Murmela 1.2.3: a friendlier first start
+
+- Fixed: on a Mac that had not yet allowed Accessibility, Murmela could stop at "Murmela couldn't start". It now starts normally and asks for the permission in its setup.
+- The welcome setup explains what Murmela needs before anything happens, and asks before downloading a speech engine. It shows each engine's size and the free space on your Mac.
+- The translation step starts with one question: do you want Murmela to translate what you dictate? If not, it is skipped.
+- Small "?" buttons explain settings that were hard to follow, such as speaker labels, the three engines, pasting and Accessibility, and the two translation engines. "Speakers" is now called "Who's speaking".
+- The sidebar now runs edge to edge in the window.
+
 ## Murmela 1.2.2: your first word, every time
 
 - Dictation records from the moment you press the shortcut. Before, the microphone took about a second to open, so the first word or two were often lost or wrong.

@@ -309,7 +309,8 @@ svg {
 .export-format-menu,
 .retry-speakers-popover,
 .model-picker-panel,
-.alternatives-menu {
+.alternatives-menu,
+.help-popover {
   background: var(--glass-bg-strong);
   -webkit-backdrop-filter: var(--glass-filter-strong);
   backdrop-filter: var(--glass-filter-strong);
@@ -374,11 +375,11 @@ svg {
 }
 
 /* ---------- App shell ----------
-   macOS 26: the content fills the window and the sidebar floats above it as a
-   Liquid Glass pane, inset from the window edges with concentric corners. The
-   title bar is transparent, so the traffic lights sit inside the glass. When
-   the native window material is on (html.native-vibrancy), the window behind
-   the sidebar is the system's translucent sidebar material. */
+   The sidebar runs flush with the window edges, like a Finder sidebar, with a
+   hairline towards the content. The title bar is transparent, so the traffic
+   lights sit on the sidebar. When the native window material is on
+   (html.native-vibrancy), the window behind the sidebar is the system's
+   translucent sidebar material. */
 .screen {
   display: grid;
   align-content: start;
@@ -398,34 +399,19 @@ svg {
 .sidebar {
   position: relative;
   z-index: 10;
-  height: calc(100vh - 2 * var(--panel-inset));
-  margin: var(--panel-inset) 0 var(--panel-inset) var(--panel-inset);
+  height: 100vh;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: calc(var(--space-3) + var(--titlebar-inset)) 10px 10px;
-  border-radius: var(--radius-panel);
   background: var(--glass-tint-sidebar);
   -webkit-backdrop-filter: var(--glass-filter);
   backdrop-filter: var(--glass-filter);
-  box-shadow: var(--shadow-glass);
+  border-right: 1px solid var(--color-divider);
   overflow: hidden;
   overscroll-behavior: none;
   user-select: none;
   -webkit-user-select: none;
-}
-/* The specular rim: light catches the top-left and bottom-right edges. */
-.sidebar::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: var(--glass-specular);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
 }
 .sidebar-titlebar {
   position: absolute;
@@ -1082,6 +1068,62 @@ html.native-vibrancy .sidebar {
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-divider);
 }
+.first-run-question {
+  margin: 0;
+  font: var(--text-title);
+  color: var(--color-text);
+}
+.first-run-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+.first-run-choice {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border: 0;
+  background: var(--color-grouped);
+  box-shadow: inset 0 0 0 1px var(--color-divider);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-2);
+  font: var(--text-body);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+  transition: background var(--duration), box-shadow var(--duration);
+}
+.first-run-choice strong {
+  font: var(--text-heading);
+  color: var(--color-text);
+}
+.first-run-choice:hover {
+  background: var(--color-primary-tint);
+}
+.first-run-choice:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+.first-run-footer-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.first-run-needs {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0 0 0 var(--space-5);
+  font: var(--text-body);
+  color: var(--color-text-2);
+}
+.first-run-needs li {
+  display: grid;
+  gap: 2px;
+}
+.first-run-needs strong {
+  color: var(--color-text);
+  font-weight: var(--weight-semibold);
+}
 @media (max-width: 680px) {
   .first-run {
     padding: var(--space-5) var(--space-4);
@@ -1109,6 +1151,9 @@ html.native-vibrancy .sidebar {
 }
 .output-picker select {
   width: 150px;
+}
+.output-picker .help-hint {
+  margin-left: calc(var(--space-1) - var(--space-2));
 }
 .output-picker-note {
   color: var(--color-text-muted);
@@ -1584,6 +1629,10 @@ summary {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
+}
+.files-speaker-label {
+  display: inline-flex;
+  align-items: center;
 }
 .files-speaker-options label {
   font-weight: var(--weight-medium);
@@ -4200,6 +4249,73 @@ html.overlay-window body {
 .translate-para-note.is-edit {
   color: var(--color-text-muted);
 }
+/* ---------- Help hint ---------- */
+.help-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--color-subtle);
+  box-shadow: inset 0 0 0 1px var(--color-divider);
+  color: var(--color-text-muted);
+  font: var(--text-label);
+  line-height: 1;
+  vertical-align: middle;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.help-hint:hover,
+.help-hint.is-open {
+  background: var(--color-primary-tint);
+  color: var(--color-primary);
+}
+.help-hint:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+.help-popover {
+  position: fixed;
+  z-index: 70;
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  font: var(--text-body);
+  color: var(--color-text-2);
+  text-align: left;
+  white-space: normal;
+  animation: pop-in 220ms var(--ease-spring);
+}
+.help-popover-title {
+  margin: 0;
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.help-popover-body {
+  display: grid;
+  gap: var(--space-2);
+}
+.help-popover-body p {
+  margin: 0;
+}
+.help-example {
+  margin: 0;
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--color-primary);
+  font: var(--text-small);
+  color: var(--color-text-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .help-popover {
+    animation: none;
+  }
+}
+
 .alternatives-menu {
   position: fixed;
   z-index: 60;

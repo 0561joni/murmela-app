@@ -122,7 +122,7 @@ describe("App readiness lifecycle", () => {
     });
     render(<App />);
     expect(
-      await screen.findByRole("dialog", { name: "Translate as you speak" }),
+      await screen.findByRole("dialog", { name: "What Murmela needs" }),
     ).toBeTruthy();
   });
 
@@ -135,6 +135,6 @@ describe("App readiness lifecycle", () => {
     await waitFor(() =>
       expect(apiMocks.getDictationReadiness).toHaveBeenCalledTimes(1),
     );
-    expect(screen.queryByRole("dialog", { name: "Translate as you speak" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "What Murmela needs" })).toBeNull();
   });
 });

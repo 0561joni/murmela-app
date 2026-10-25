@@ -16,6 +16,16 @@ const props = () => ({
   onReview: vi.fn(),
 });
 describe("File workspace", () => {
+  it("explains speaker labels in plain words with an example", () => {
+    render(<FilesScreen {...props()} />);
+    const select = screen.getByLabelText("Who's speaking") as HTMLSelectElement;
+    expect([...select.options].map((option) => option.text)).toEqual([
+      "Count people automatically",
+      "I know how many people",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "About speaker labels" }));
+    expect(screen.getByRole("dialog", { name: "Speaker labels" }).textContent).toContain("Speaker 1 · 00:12");
+  });
   it("opens published text by reference even before content hydration finishes", () => {
     const onReview = vi.fn();
     const item = {

@@ -931,7 +931,7 @@ export function ReviewWorkspace(props: Props) {
                   </p>
                 ) : null}
                 <label className="field-stack">
-                  Known speaker count
+                  How many people speak
                   <select
                     autoFocus
                     value={knownCount === "auto" ? "auto" : "known"}
@@ -943,8 +943,8 @@ export function ReviewWorkspace(props: Props) {
                       )
                     }
                   >
-                    <option value="auto">Detect automatically</option>
-                    <option value="known">Use an exact count</option>
+                    <option value="auto">Count people automatically</option>
+                    <option value="known">I know how many people</option>
                   </select>
                 </label>
                 {knownCount !== "auto" ? (

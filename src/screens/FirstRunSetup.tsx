@@ -52,8 +52,13 @@ const FIRST_RUN_PITCH: Record<string, string> = {
 
 const CURATED_ORDER = Object.keys(FIRST_RUN_PITCH);
 
-type Step = 0 | 1 | 2;
-const STEP_TITLES = ["Translate as you speak", "Let Murmela listen and type", "Try it"] as const;
+type Step = 0 | 1 | 2 | 3;
+const STEP_TITLES = [
+  "What Murmela needs",
+  "Translate as you speak",
+  "Let Murmela listen and type",
+  "Try it",
+] as const;
 
 export interface FirstRunSetupProps {
   settings: AppSettings | null;
@@ -83,6 +88,8 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
   const pendingModel = useRef<string | null>(null);
   // Translation: the languages picked in this setup and the engine that serves them.
   const [languages, setLanguages] = useState<OutputLanguage[]>([]);
+  // The answer to "translate what you dictate?"; null until asked.
+  const [wantsTranslation, setWantsTranslation] = useState<boolean | null>(null);
   const [translationModelId, setTranslationModelId] = useState<string | null>(null);
   const [recommendCompact, setRecommendCompact] = useState(true);
   const [termsOpen, setTermsOpen] = useState(false);
@@ -186,33 +193,51 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
       });
   }, [catalog]);
 
-  // No engine choice: an installed engine is used, otherwise the recommended one
-  // (first in the curated order) that fits on the disk starts downloading at once.
+  // An installed engine is used at once. Otherwise the recommended one (first
+  // in the curated order) that fits on the disk is preselected, and nothing
+  // downloads until the user agrees on the first step.
+  const [engineId, setEngineId] = useState<string | null>(null);
   const engineChosen = useRef(false);
   useEffect(() => {
     if (engineChosen.current || catalog === null || !props.readiness) return;
     engineChosen.current = true;
     if (props.readiness.shortcutModelReady) return;
-    const model = candidates.find((entry) => entry.installed) ?? candidates.find((entry) => fits(entry, freeSpace));
-    if (!model) {
-      if (candidates.length > 0) {
-        setError("There is not enough free disk space for a dictation engine. Free up some space, then pick one in Settings → Engines.");
-      }
+    const installed = candidates.find((entry) => entry.installed);
+    if (installed) {
+      pendingModel.current = installed.id;
+      setCommittedId(installed.id);
+      void applyModel(installed.id);
       return;
     }
-    pendingModel.current = model.id;
-    setCommittedId(model.id);
-    if (model.installed) {
-      void applyModel(model.id);
-    } else {
-      startModelDownload(model.id)
-        .then((status) => setDownloads((current) => ({ ...current, [model.id]: status })))
-        .catch((reason) => {
-          pendingModel.current = null;
-          setError(messageOf(reason, "The dictation engine could not start downloading."));
-        });
+    const model = candidates.find((entry) => fits(entry, freeSpace));
+    if (model) {
+      setEngineId(model.id);
+    } else if (candidates.length > 0) {
+      setError("There is not enough free disk space for a dictation engine. Free up some space, then pick one in Settings → Engines.");
     }
   }, [applyModel, candidates, catalog, freeSpace, props.readiness]);
+  const engine = candidates.find((model) => model.id === engineId) ?? null;
+  const engineDownload = engineId ? downloads[engineId] : undefined;
+
+  async function continueWithEngine() {
+    setError("");
+    if (!engine || engine.installed || engineDownload?.state === "downloading") {
+      setStep(1);
+      return;
+    }
+    setBusy(true);
+    try {
+      const status = await startModelDownload(engine.id);
+      pendingModel.current = engine.id;
+      setCommittedId(engine.id);
+      setDownloads((current) => ({ ...current, [engine.id]: status }));
+      setStep(1);
+    } catch (reason) {
+      setError(messageOf(reason, "The dictation engine could not start downloading."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const translationModels = useMemo(
     () => (catalog ?? []).filter((model) => model.capability === "translation" && model.availability === "available"),
@@ -240,7 +265,7 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
   async function continueWithLanguages() {
     setError("");
     if (languages.length === 0) {
-      setStep(1);
+      setStep(2);
       return;
     }
     setBusy(true);
@@ -257,7 +282,7 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
         }
         await startTranslationDownload(model.id);
       }
-      setStep(1);
+      setStep(2);
     } catch (reason) {
       setError(messageOf(reason, "Could not set up translation."));
     } finally {
@@ -308,6 +333,26 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
         </ol>
 
         {step === 0 ? (
+          <NeedsStep
+            ready={Boolean(props.readiness?.shortcutModelReady) || committedModel?.installed === true}
+            loading={catalog === null}
+            candidates={candidates}
+            chosenId={engineId}
+            onChoose={setEngineId}
+            freeSpace={freeSpace}
+            downloads={downloads}
+          />
+        ) : step === 1 && wantsTranslation !== true ? (
+          <TranslationQuestion
+            onAnswer={(yes) => {
+              setWantsTranslation(yes);
+              if (!yes) {
+                setLanguages([]);
+                setStep(2);
+              }
+            }}
+          />
+        ) : step === 1 ? (
           <LanguagesStep
             languages={languages}
             onChangeLanguages={setLanguages}
@@ -318,7 +363,7 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
             freeSpace={spaceAfterEngine}
             downloads={downloads}
           />
-        ) : step === 1 ? (
+        ) : step === 2 ? (
           <PermissionsStep
             readiness={props.readiness}
             isPollingAccessibility={props.isPollingAccessibility}
@@ -347,15 +392,15 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
               await acceptModelTerms(translationModel.id);
               setTermsOpen(false);
               await startTranslationDownload(translationModel.id);
-              setStep(1);
+              setStep(2);
             }}
           />
         ) : null}
 
-        {step < 2 && committedDownload?.state === "downloading" ? (
+        {step > 0 && step < 3 && committedDownload?.state === "downloading" ? (
           <DownloadLine model={committedModel} status={committedDownload} />
         ) : null}
-        {step === 1 && translationDownload?.state === "downloading" ? (
+        {step === 2 && translationDownload?.state === "downloading" ? (
           <DownloadLine model={translationModel} status={translationDownload} />
         ) : null}
         {translationDownload?.state === "failed" ? (
@@ -378,13 +423,37 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
 
         <footer className="first-run-footer">
           {step > 0 ? (
-            <Button variant="ghost" onClick={() => setStep((step - 1) as Step)} disabled={busy}>
+            <Button
+              variant="ghost"
+              onClick={() =>
+                // From the language setup, Back returns to the translate question.
+                step === 1 && wantsTranslation ? setWantsTranslation(null) : setStep((step - 1) as Step)
+              }
+              disabled={busy}
+            >
               Back
             </Button>
           ) : (
             <span />
           )}
           {step === 0 ? (
+            <span className="first-run-footer-actions">
+              {engine && !engine.installed && engineDownload?.state !== "downloading" ? (
+                <Button variant="ghost" onClick={() => setStep(1)} disabled={busy}>
+                  Not now
+                </Button>
+              ) : null}
+              <Button variant="primary" busy={busy} onClick={() => void continueWithEngine()}>
+                {engine && !engine.installed && engineDownload?.state !== "downloading"
+                  ? `Download ${formatBytes(engine.sizeBytes)} and continue`
+                  : "Continue"}
+              </Button>
+            </span>
+          ) : step === 1 && wantsTranslation !== true ? (
+            <Button variant="ghost" onClick={() => setStep(2)}>
+              Skip this step
+            </Button>
+          ) : step === 1 ? (
             <Button
               variant="primary"
               busy={busy}
@@ -392,13 +461,13 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
               onClick={() => void continueWithLanguages()}
             >
               {languages.length === 0
-                ? "Skip translation"
+                ? "Skip this step"
                 : !translationModel || translationModel.installed || translationDownload?.state === "downloading"
                   ? "Continue"
                   : "Download and continue"}
             </Button>
-          ) : step === 1 ? (
-            <Button variant="primary" onClick={() => setStep(2)}>
+          ) : step === 2 ? (
+            <Button variant="primary" onClick={() => setStep(3)}>
               Continue
             </Button>
           ) : (
@@ -407,6 +476,133 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
             </Button>
           )}
         </footer>
+      </div>
+    </div>
+  );
+}
+
+function NeedsStep({
+  ready,
+  loading,
+  candidates,
+  chosenId,
+  onChoose,
+  freeSpace,
+  downloads,
+}: {
+  ready: boolean;
+  loading: boolean;
+  candidates: DownloadableModel[];
+  chosenId: string | null;
+  onChoose: (modelId: string) => void;
+  freeSpace: number | null;
+  downloads: Record<string, ModelDownloadStatus>;
+}) {
+  const groupName = useId();
+  const offered = candidates.filter((model) => !model.installed);
+  const recommendedId = offered.find((model) => fits(model, freeSpace))?.id;
+  return (
+    <div className="first-run-body">
+      <p className="first-run-lead">
+        Murmela turns your speech into text on this Mac. Your voice is never sent anywhere. To work, it needs:
+      </p>
+      <ul className="first-run-needs">
+        <li>
+          <strong>A speech engine</strong>
+          <span>
+            {ready
+              ? "Already installed."
+              : "The part that understands what you say. It is downloaded once from Hugging Face and stored on this Mac; after that, Murmela works offline."}
+          </span>
+        </li>
+        <li>
+          <strong>Microphone access</strong>
+          <span>So Murmela can hear you. macOS asks in step 3.</span>
+        </li>
+        <li>
+          <strong>Accessibility access</strong>
+          <span>So Murmela can paste where your cursor is and notice your dictation key. Also in step 3.</span>
+        </li>
+      </ul>
+      {ready ? null : loading ? (
+        <p className="first-run-note">Looking up the speech engines…</p>
+      ) : offered.length > 0 ? (
+        <>
+          <p className="first-run-note">
+            Which speech engine should Murmela download?
+            {freeSpace !== null ? ` ${formatBytes(freeSpace)} free on this Mac.` : ""} You can add or swap engines
+            any time in Settings → Engines.
+          </p>
+          <div className="first-run-engines" role="radiogroup" aria-label="Dictation engine">
+            {offered.map((model) => {
+              const roomy = fits(model, freeSpace);
+              const status = downloads[model.id];
+              return (
+                <label
+                  key={model.id}
+                  className={[
+                    "first-run-engine",
+                    chosenId === model.id ? "is-selected" : "",
+                    roomy ? "" : "is-disabled",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                >
+                  <input
+                    type="radio"
+                    name={groupName}
+                    value={model.id}
+                    checked={chosenId === model.id}
+                    disabled={!roomy}
+                    onChange={() => onChoose(model.id)}
+                  />
+                  <span className="first-run-engine-body">
+                    <strong>
+                      {getModelPresentation(model).friendlyName}
+                      {model.id === recommendedId ? (
+                        <span className="status-pill status-pill-success">Recommended</span>
+                      ) : null}
+                    </strong>
+                    {FIRST_RUN_PITCH[model.id] ? (
+                      <span className="first-run-engine-pitch">{FIRST_RUN_PITCH[model.id]}</span>
+                    ) : null}
+                    <span className="first-run-engine-facts">
+                      <span>{formatBytes(model.sizeBytes)} download</span>
+                    </span>
+                    {!roomy ? (
+                      <span className="notice-text">Not enough free disk space for this engine.</span>
+                    ) : null}
+                    {status?.state === "downloading" ? (
+                      <Progress value={status.progressPercent} label={`Downloading ${model.modelName}`} />
+                    ) : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function TranslationQuestion({ onAnswer }: { onAnswer: (yes: boolean) => void }) {
+  return (
+    <div className="first-run-body">
+      <p className="first-run-question">Do you want Murmela to translate what you dictate?</p>
+      <p className="first-run-lead">
+        For example, speak German and have English text appear. Not sure? Choose No; you can turn translation on
+        later in Settings → Languages.
+      </p>
+      <div className="first-run-choices">
+        <button type="button" className="first-run-choice" onClick={() => onAnswer(false)}>
+          <strong>No, just dictate</strong>
+          <span>Text appears in the language you speak.</span>
+        </button>
+        <button type="button" className="first-run-choice" onClick={() => onAnswer(true)}>
+          <strong>Yes, translate too</strong>
+          <span>Choose languages and download a translation engine.</span>
+        </button>
       </div>
     </div>
   );
@@ -442,8 +638,12 @@ function LanguagesStep({
   return (
     <div className="first-run-body">
       <p className="first-run-lead">
-        Murmela can paste what you say in another language, translated on this computer. Which languages do you
-        want to translate into? Pick none to only dictate; you can change this any time in Settings → Languages.
+        You speak as usual, and Murmela pastes the text in the language you choose. Translation runs on this Mac,
+        like dictation, so nothing is sent anywhere. It needs a second engine, downloaded once.
+      </p>
+      <p className="first-run-lead">
+        Pick the languages you want to translate into. While dictating, a key switches between them and back to
+        the language you spoke. You can change this any time in Settings → Languages.
       </p>
       <fieldset className="first-run-languages">
         <legend className="sr-only">Translate into</legend>
@@ -666,6 +866,16 @@ function TryStep({
           it is ready.
         </p>
         {download?.state === "downloading" ? <DownloadLine model={model} status={download} /> : null}
+      </div>
+    );
+  }
+  if (!model && readiness && !readiness.shortcutModelReady) {
+    return (
+      <div className="first-run-body">
+        <p className="first-run-lead">
+          Murmela needs a speech engine before you can dictate. Go back to the first step to download one, or pick
+          one later in Settings → Engines.
+        </p>
       </div>
     );
   }

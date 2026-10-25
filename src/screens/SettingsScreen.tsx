@@ -51,6 +51,7 @@ import {
   suspendShortcutCapture,
 } from "../lib/api";
 import { setMelaEnabled, useMelaEnabled } from "../lib/mela";
+import { HelpHint } from "../components/HelpHint";
 import type {
   AppSettings,
   DownloadableModel,
@@ -1132,7 +1133,20 @@ export function SettingsScreen({
           <article className="settings-card settings-card-wide">
             <div className="setting-row">
               <div className="setting-copy">
-                <p className="setting-title">Auto paste after dictation</p>
+                <p className="setting-title">
+                  Auto paste after dictation
+                  <HelpHint title="Pasting and Accessibility">
+                    <p>
+                      To put text where your cursor is, Murmela presses ⌘V for you. macOS only allows that for apps
+                      you turn on under Privacy &amp; Security → Accessibility, and describes it as “control this
+                      computer”.
+                    </p>
+                    <p>
+                      Murmela uses it only to paste and to notice your dictation key. Without it, the text is copied
+                      and you paste it yourself.
+                    </p>
+                  </HelpHint>
+                </p>
                 <p className="muted">Insert text directly while preserving your previous clipboard contents.</p>
               </div>
               <div className="setting-control">
@@ -1281,7 +1295,17 @@ export function SettingsScreen({
             />
           ) : null}
           <article className="glass-subtle settings-card settings-card-wide" aria-label="Translation">
-            <h3>Translation <span className="muted">· Preview</span></h3>
+            <h3>
+              Translation <span className="muted">· Preview</span>
+              <HelpHint title="Which translation engine?" topic="translation engines">
+                <p>
+                  Both are TranslateGemma by Google and run on this Mac. <strong>4B</strong> is the compact one: a
+                  smaller download, fast, and fine for everyday text. <strong>12B</strong> translates more naturally
+                  but needs about 13 GB of free memory while it works.
+                </p>
+                <p>When unsure, start with 4B. You can download the other one later.</p>
+              </HelpHint>
+            </h3>
             <p>Translate texts on the Translate screen, and dictate while Murmela pastes your words in any of nine languages.</p>
             <p className="muted">Needs an Apple Silicon Mac. Everything stays on this computer.</p>
             <ul className="translation-model-list" aria-label="Translation engines">
@@ -1397,7 +1421,24 @@ export function SettingsScreen({
         aria-label="Engines"
       >
         <div className="settings-section-heading">
-          <h2>Engines</h2>
+          <h2>
+            Engines
+            <HelpHint title="Why several engines?" topic="engines">
+              <p>
+                An engine is the part that turns speech into text. Different jobs suit different engines, so Murmela
+                lets you pick one for each:
+              </p>
+              <p>
+                <strong>Dictation</strong>: the shortcut in any app. Speed matters most.
+                <br />
+                <strong>Record button</strong>: the button on the Dictate screen. It uses the dictation engine unless
+                you choose another.
+                <br />
+                <strong>Files</strong>: audio and video files. Accuracy matters more than speed.
+              </p>
+              <p>You can use one engine for everything. More engines only cost disk space.</p>
+            </HelpHint>
+          </h2>
           <p className="muted">
             The speech engines that turn your voice into text. All of them run on this computer.
           </p>
@@ -2003,7 +2044,21 @@ export function SettingsScreen({
           </article>
           {livePairInstalled ? (
             <article className="glass-subtle settings-card settings-card-wide" aria-label="Live dictation tuning">
-              <h3>Live dictation tuning</h3>
+              <h3>
+                Live dictation tuning
+                <HelpHint title="Live dictation tuning">
+                  <p>
+                    <strong>Faster</strong> shows words sooner while you speak. <strong>Steadier</strong> waits a
+                    little longer, so the preview changes less and German comes out better. The final text is pasted
+                    either way.
+                  </p>
+                  <p>
+                    <strong>Keep loaded</strong> holds the engine in memory (about 1.4 GB) so it is ready the moment
+                    you press the key. When off, it loads on each press, which adds a short wait, and frees the
+                    memory after a minute.
+                  </p>
+                </HelpHint>
+              </h3>
               {livePairInstalled ? <>
                 <p className="muted" role="status">
                   Live dictation: {LIVE_PAIR_STATE_LABELS[livePairStatus?.state ?? "off"]}
@@ -2058,10 +2113,17 @@ export function SettingsScreen({
             <div className="setting-row">
               <div className="setting-copy">
                 <p className="setting-title">
-                  Use Metal GPU acceleration
+                  Use the graphics chip (GPU)
+                  <HelpHint title="Graphics chip (GPU)" topic="the graphics chip">
+                    <p>
+                      Engines that support it run on your Mac's graphics chip through Apple's Metal, which is usually
+                      much faster than the main processor (CPU).
+                    </p>
+                    <p>If that does not work, Murmela falls back to the CPU on its own. Turn this off only to troubleshoot.</p>
+                  </HelpHint>
                 </p>
                 <p className="muted">
-                  Try Metal GPU acceleration when available, and fall back to CPU if not.
+                  Faster transcription where supported. Falls back to the main processor if not.
                 </p>
               </div>
               <div className="setting-control">
