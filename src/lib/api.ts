@@ -1468,7 +1468,7 @@ const mockNetworkDestinations: NetworkDestination[] = [
     name: "GitHub",
     host: "github.com",
     reason:
-      "Checks for a new version of Murmela and downloads it, only while automatic updates are on or when you press Check now.",
+      "Checks for a new version of Murmela while automatic updates are on or when you press Check now, and downloads it when you choose Download update.",
   },
   {
     id: "lemon_squeezy",
@@ -1710,20 +1710,29 @@ export async function requestAccessibilityAccess(): Promise<void> {
   return invoke<void>("request_accessibility_access");
 }
 
-// Browser previews: `?update-ready` shows a downloaded release, `?update-renewal` a release
-// that the Pro key doesn't cover.
+// Browser previews: `?update-available` shows a new release, `?update-ready` a downloaded one,
+// `?update-blocked` one that can't be installed, `?update-renewal` one the Pro key doesn't cover.
 const mockUpdateStatus = (): UpdateStatus => {
   const query = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
-  const ready = query.has("update-ready");
-  const renewal = query.has("update-renewal");
+  const state = query.has("update-available")
+    ? "available"
+    : query.has("update-ready")
+      ? "ready"
+      : query.has("update-blocked")
+        ? "cannot_install"
+        : query.has("update-renewal")
+          ? "needs_renewal"
+          : "up_to_date";
+  const found = state !== "up_to_date";
   return {
-    state: ready ? "ready" : renewal ? "needs_renewal" : "up_to_date",
+    state,
     currentVersion: "1.0.0",
-    version: ready || renewal ? "0.2.0" : null,
-    notes: ready || renewal ? "Faster live dictation and a clearer permissions setup." : null,
+    version: found ? "0.2.0" : null,
+    notes: found ? "Faster live dictation and a clearer permissions setup." : null,
     message: null,
     lastCheckedMs: Date.now(),
-    proUpdatesUntil: renewal ? "2027-10-14" : null,
+    progress: null,
+    proUpdatesUntil: state === "needs_renewal" ? "2027-10-14" : null,
   };
 };
 
@@ -1732,7 +1741,7 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
   return invoke<UpdateStatus>("get_update_status");
 }
 
-/** Looks for a newer release now and downloads it if there is one. */
+/** Looks for a newer release now. It is only downloaded on `downloadUpdate`. */
 export async function checkForUpdates(): Promise<UpdateStatus> {
   if (!isTauriRuntime()) return mockUpdateStatus();
   return invoke<UpdateStatus>("check_for_updates");
@@ -1742,6 +1751,18 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 export async function downloadUpdateAsFree(): Promise<UpdateStatus> {
   if (!isTauriRuntime()) return { ...mockUpdateStatus(), state: "ready", proUpdatesUntil: null };
   return invoke<UpdateStatus>("download_update_as_free");
+}
+
+/** Downloads the release found by the last check. */
+export async function downloadUpdate(): Promise<UpdateStatus> {
+  if (!isTauriRuntime()) return { ...mockUpdateStatus(), state: "ready" };
+  return invoke<UpdateStatus>("download_update");
+}
+
+/** Puts the downloaded release into ~/Applications and opens it there. */
+export async function installUpdateInHomeApplications(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  return invoke<void>("install_update_in_home_applications");
 }
 
 export async function installUpdateAndRestart(): Promise<void> {

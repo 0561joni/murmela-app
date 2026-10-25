@@ -86,6 +86,9 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
   // The model the user committed to; it becomes the shortcut model once installed.
   const [committedId, setCommittedId] = useState<string | null>(null);
   const pendingModel = useRef<string | null>(null);
+  // Murmela downloads one model at a time: the rest wait here, in order.
+  const [queue, setQueue] = useState<string[]>([]);
+  const activeDownload = useRef<string | null>(null);
   // Translation: the languages picked in this setup and the engine that serves them.
   const [languages, setLanguages] = useState<OutputLanguage[]>([]);
   // The answer to "translate what you dictate?"; null until asked.
@@ -147,6 +150,11 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
     const accept = (status: ModelDownloadStatus) => {
       if (disposed) return;
       setDownloads((current) => ({ ...current, [status.modelId]: status }));
+      if (status.state === "downloading" && activeDownload.current === null) activeDownload.current = status.modelId;
+      if (activeDownload.current === status.modelId && status.state !== "downloading") {
+        activeDownload.current = null;
+        setQueue((current) => [...current]);
+      }
       if (status.state === "completed") {
         setCatalog((current) =>
           current?.map((model) =>
@@ -195,8 +203,8 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
 
   // An installed engine is used at once. Otherwise the recommended one (first
   // in the curated order) that fits on the disk is preselected, and nothing
-  // downloads until the user agrees on the first step.
-  const [engineId, setEngineId] = useState<string | null>(null);
+  // downloads until the user agrees on the first step. More can be ticked.
+  const [engineIds, setEngineIds] = useState<string[]>([]);
   const engineChosen = useRef(false);
   useEffect(() => {
     if (engineChosen.current || catalog === null || !props.readiness) return;
@@ -211,56 +219,85 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
     }
     const model = candidates.find((entry) => fits(entry, freeSpace));
     if (model) {
-      setEngineId(model.id);
+      setEngineIds([model.id]);
     } else if (candidates.length > 0) {
       setError("There is not enough free disk space for a dictation engine. Free up some space, then pick one in Settings → Engines.");
     }
   }, [applyModel, candidates, catalog, freeSpace, props.readiness]);
-  const engine = candidates.find((model) => model.id === engineId) ?? null;
-  const engineDownload = engineId ? downloads[engineId] : undefined;
+  /** The ticked engines still to download, in the curated order. */
+  const chosenEngines = candidates.filter((model) => engineIds.includes(model.id) && !model.installed);
+  const chosenBytes = chosenEngines.reduce((total, model) => total + model.sizeBytes, 0);
+  const enginesQueued = chosenEngines.some((model) => queue.includes(model.id) || downloads[model.id]?.state === "downloading");
 
-  async function continueWithEngine() {
-    setError("");
-    if (!engine || engine.installed || engineDownload?.state === "downloading") {
-      setStep(1);
-      return;
-    }
-    setBusy(true);
-    try {
-      const status = await startModelDownload(engine.id);
-      pendingModel.current = engine.id;
-      setCommittedId(engine.id);
-      setDownloads((current) => ({ ...current, [engine.id]: status }));
-      setStep(1);
-    } catch (reason) {
-      setError(messageOf(reason, "The dictation engine could not start downloading."));
-    } finally {
-      setBusy(false);
-    }
+  /** Adds models to the download queue; they start one after the other. */
+  function enqueue(ids: string[]) {
+    setQueue((current) => [...current, ...ids.filter((id) => !current.includes(id))]);
   }
+
+  // Starts the next queued download whenever nothing is downloading.
+  useEffect(() => {
+    if (activeDownload.current !== null || queue.length === 0) return;
+    const [next, ...rest] = queue;
+    activeDownload.current = next;
+    setQueue(rest);
+    startModelDownload(next)
+      .then((status) => setDownloads((current) => ({ ...current, [next]: status })))
+      .catch((reason) => {
+        activeDownload.current = null;
+        if (pendingModel.current === next) pendingModel.current = null;
+        setError(messageOf(reason, "A download could not start."));
+        setQueue((current) => [...current]);
+      });
+  }, [queue]);
+
+  function continueWithEngines() {
+    setError("");
+    if (chosenEngines.length > 0 && !enginesQueued) {
+      // The highest ticked engine becomes the dictation engine once it is installed.
+      pendingModel.current = chosenEngines[0].id;
+      setCommittedId(chosenEngines[0].id);
+      enqueue(chosenEngines.map((model) => model.id));
+    }
+    setStep(1);
+  }
+
+  /** Space left once the speech engines that are queued or downloading are on disk.
+   * Engines ticked but skipped with "Not now" don't count. */
+  const comingBytes = candidates
+    .filter((model) => !model.installed && (queue.includes(model.id) || downloads[model.id]?.state === "downloading"))
+    .reduce((total, model) => total + model.sizeBytes, 0);
+  const spaceAfterEngine = freeSpace === null ? null : freeSpace - comingBytes;
 
   const translationModels = useMemo(
     () => (catalog ?? []).filter((model) => model.capability === "translation" && model.availability === "available"),
     [catalog],
   );
+  // Until the user picks one: an installed engine, else the recommended one if it
+  // fits on the disk, else one that does.
+  const translationPicked = useRef(false);
   useEffect(() => {
-    if (translationModelId || translationModels.length === 0) return;
+    if (translationPicked.current || translationModels.length === 0) return;
     const installed = translationModels.find((model) => model.installed);
     const recommended = translationModels.find(
       (model) => (model.id === COMPACT_TRANSLATION_MODEL_ID) === recommendCompact,
     );
-    setTranslationModelId((installed ?? recommended ?? translationModels[0]).id);
-  }, [recommendCompact, translationModelId, translationModels]);
+    const fitting = [recommended, ...translationModels].find((model) => model && fits(model, spaceAfterEngine));
+    setTranslationModelId((installed ?? fitting ?? recommended ?? translationModels[0]).id);
+  }, [recommendCompact, spaceAfterEngine, translationModels]);
   const translationModel = translationModels.find((model) => model.id === translationModelId) ?? null;
   const translationDownload = translationModelId ? downloads[translationModelId] : undefined;
+  const translationComing =
+    Boolean(translationModel?.installed) ||
+    translationDownload?.state === "downloading" ||
+    (translationModelId !== null && queue.includes(translationModelId));
+  /** No translation engine fits on the disk: the languages are saved for later instead. */
+  const noTranslationRoom =
+    translationModels.length > 0 && !translationModels.some((model) => fits(model, spaceAfterEngine));
 
   const committedModel = candidates.find((model) => model.id === committedId) ?? null;
   const committedDownload = committedId ? downloads[committedId] : undefined;
   const modelInstalled = Boolean(committedModel?.installed) || committedDownload?.state === "completed";
 
-  /** Space left once the speech engine (if it is still coming) is on disk. */
-  const spaceAfterEngine =
-    freeSpace === null ? null : freeSpace - (committedModel && !committedModel.installed ? committedModel.sizeBytes : 0);
 
   async function continueWithLanguages() {
     setError("");
@@ -274,7 +311,7 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
       const model = translationModel;
       if (model?.installed) {
         await props.onSaveSettings({ translationEnabled: true, translationModelId: model.id });
-      } else if (model && translationDownload?.state !== "downloading") {
+      } else if (model && !translationComing && !noTranslationRoom) {
         const terms = await getModelTermsStatus(model.id);
         if (terms.required && !terms.accepted) {
           setTermsOpen(true);
@@ -291,8 +328,7 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
   }
 
   async function startTranslationDownload(modelId: string) {
-    const status = await startModelDownload(modelId);
-    setDownloads((current) => ({ ...current, [modelId]: status }));
+    enqueue([modelId]);
   }
 
   async function finish() {
@@ -304,6 +340,8 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
       setBusy(false);
     }
   }
+
+  const activeStatus = Object.values(downloads).find((status) => status.state === "downloading") ?? null;
 
   return (
     <div className="first-run-backdrop">
@@ -337,8 +375,11 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
             ready={Boolean(props.readiness?.shortcutModelReady) || committedModel?.installed === true}
             loading={catalog === null}
             candidates={candidates}
-            chosenId={engineId}
-            onChoose={setEngineId}
+            chosenIds={engineIds}
+            onToggle={(id) =>
+              setEngineIds((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]))
+            }
+            locked={enginesQueued}
             freeSpace={freeSpace}
             downloads={downloads}
           />
@@ -358,10 +399,15 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
             onChangeLanguages={setLanguages}
             models={translationModels}
             chosenId={translationModelId}
-            onChooseModel={setTranslationModelId}
+            onChooseModel={(id) => {
+              translationPicked.current = true;
+              setTranslationModelId(id);
+            }}
             recommendCompact={recommendCompact}
             freeSpace={spaceAfterEngine}
             downloads={downloads}
+            noRoom={noTranslationRoom}
+            needsDownload={Boolean(translationModel) && !translationComing}
           />
         ) : step === 2 ? (
           <PermissionsStep
@@ -397,11 +443,12 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
           />
         ) : null}
 
-        {step > 0 && step < 3 && committedDownload?.state === "downloading" ? (
-          <DownloadLine model={committedModel} status={committedDownload} />
-        ) : null}
-        {step === 2 && translationDownload?.state === "downloading" ? (
-          <DownloadLine model={translationModel} status={translationDownload} />
+        {step > 0 && step < 3 && activeStatus ? (
+          <DownloadLine
+            model={catalog?.find((model) => model.id === activeStatus.modelId) ?? null}
+            status={activeStatus}
+            waiting={queue.length}
+          />
         ) : null}
         {translationDownload?.state === "failed" ? (
           <p className="error-text" role="alert">
@@ -438,14 +485,19 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
           )}
           {step === 0 ? (
             <span className="first-run-footer-actions">
-              {engine && !engine.installed && engineDownload?.state !== "downloading" ? (
+              {chosenEngines.length > 0 && !enginesQueued ? (
                 <Button variant="ghost" onClick={() => setStep(1)} disabled={busy}>
                   Not now
                 </Button>
               ) : null}
-              <Button variant="primary" busy={busy} onClick={() => void continueWithEngine()}>
-                {engine && !engine.installed && engineDownload?.state !== "downloading"
-                  ? `Download ${formatBytes(engine.sizeBytes)} and continue`
+              <Button
+                variant="primary"
+                busy={busy}
+                disabled={!fitsBytes(chosenBytes, freeSpace)}
+                onClick={continueWithEngines}
+              >
+                {chosenEngines.length > 0 && !enginesQueued
+                  ? `Download ${formatBytes(chosenBytes)} and continue`
                   : "Continue"}
               </Button>
             </span>
@@ -457,14 +509,22 @@ export function FirstRunSetup(props: FirstRunSetupProps) {
             <Button
               variant="primary"
               busy={busy}
-              disabled={languages.length > 0 && translationModel !== null && !fits(translationModel, spaceAfterEngine)}
+              disabled={
+                languages.length > 0 &&
+                translationModel !== null &&
+                !translationComing &&
+                !noTranslationRoom &&
+                !fits(translationModel, spaceAfterEngine)
+              }
               onClick={() => void continueWithLanguages()}
             >
               {languages.length === 0
                 ? "Skip this step"
-                : !translationModel || translationModel.installed || translationDownload?.state === "downloading"
+                : !translationModel || translationComing
                   ? "Continue"
-                  : "Download and continue"}
+                  : noTranslationRoom
+                    ? "Save and continue"
+                    : `Download ${formatBytes(translationModel.sizeBytes)} and continue`}
             </Button>
           ) : step === 2 ? (
             <Button variant="primary" onClick={() => setStep(3)}>
@@ -485,22 +545,27 @@ function NeedsStep({
   ready,
   loading,
   candidates,
-  chosenId,
-  onChoose,
+  chosenIds,
+  onToggle,
+  locked,
   freeSpace,
   downloads,
 }: {
   ready: boolean;
   loading: boolean;
   candidates: DownloadableModel[];
-  chosenId: string | null;
-  onChoose: (modelId: string) => void;
+  chosenIds: string[];
+  onToggle: (modelId: string) => void;
+  /** The chosen engines are already queued; the choice can't change any more. */
+  locked: boolean;
   freeSpace: number | null;
   downloads: Record<string, ModelDownloadStatus>;
 }) {
-  const groupName = useId();
   const offered = candidates.filter((model) => !model.installed);
   const recommendedId = offered.find((model) => fits(model, freeSpace))?.id;
+  const chosenBytes = offered
+    .filter((model) => chosenIds.includes(model.id))
+    .reduce((total, model) => total + model.sizeBytes, 0);
   return (
     <div className="first-run-body">
       <p className="first-run-lead">
@@ -529,38 +594,45 @@ function NeedsStep({
       ) : offered.length > 0 ? (
         <>
           <p className="first-run-note">
-            Which speech engine should Murmela download?
+            Which speech engines should Murmela download? Tick one or more; they download one after the other.
+            With several, dictation uses the highest one in this list.
             {freeSpace !== null ? ` ${formatBytes(freeSpace)} free on this Mac.` : ""} You can add or swap engines
             any time in Settings → Engines.
           </p>
-          <div className="first-run-engines" role="radiogroup" aria-label="Dictation engine">
+          <div className="first-run-engines" role="group" aria-label="Speech engines to download">
             {offered.map((model) => {
-              const roomy = fits(model, freeSpace);
+              const chosen = chosenIds.includes(model.id);
+              // An unticked engine must fit next to the ones already ticked.
+              const roomy = chosen || fitsBytes(chosenBytes + model.sizeBytes, freeSpace);
               const status = downloads[model.id];
+              const forDictation = offered.find((entry) => chosenIds.includes(entry.id))?.id === model.id;
               return (
                 <label
                   key={model.id}
                   className={[
                     "first-run-engine",
-                    chosenId === model.id ? "is-selected" : "",
-                    roomy ? "" : "is-disabled",
+                    chosen ? "is-selected" : "",
+                    roomy && !locked ? "" : "is-disabled",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                 >
                   <input
-                    type="radio"
-                    name={groupName}
+                    type="checkbox"
                     value={model.id}
-                    checked={chosenId === model.id}
-                    disabled={!roomy}
-                    onChange={() => onChoose(model.id)}
+                    aria-label={`${getModelPresentation(model).friendlyName}, ${formatBytes(model.sizeBytes)}`}
+                    checked={chosen}
+                    disabled={!roomy || locked}
+                    onChange={() => onToggle(model.id)}
                   />
                   <span className="first-run-engine-body">
                     <strong>
                       {getModelPresentation(model).friendlyName}
                       {model.id === recommendedId ? (
                         <span className="status-pill status-pill-success">Recommended</span>
+                      ) : null}
+                      {forDictation && chosenIds.length > 1 ? (
+                        <span className="status-pill">Used for dictation</span>
                       ) : null}
                     </strong>
                     {FIRST_RUN_PITCH[model.id] ? (
@@ -570,7 +642,7 @@ function NeedsStep({
                       <span>{formatBytes(model.sizeBytes)} download</span>
                     </span>
                     {!roomy ? (
-                      <span className="notice-text">Not enough free disk space for this engine.</span>
+                      <span className="notice-text">Not enough free disk space for this engine as well.</span>
                     ) : null}
                     {status?.state === "downloading" ? (
                       <Progress value={status.progressPercent} label={`Downloading ${model.modelName}`} />
@@ -617,6 +689,8 @@ function LanguagesStep({
   recommendCompact,
   freeSpace,
   downloads,
+  noRoom,
+  needsDownload,
 }: {
   languages: OutputLanguage[];
   onChangeLanguages: (languages: OutputLanguage[]) => void;
@@ -626,6 +700,10 @@ function LanguagesStep({
   recommendCompact: boolean;
   freeSpace: number | null;
   downloads: Record<string, ModelDownloadStatus>;
+  /** No translation engine fits on the disk. */
+  noRoom: boolean;
+  /** The chosen engine still has to be downloaded. */
+  needsDownload: boolean;
 }) {
   const groupName = useId();
   const toggle = (code: OutputLanguage) =>
@@ -703,6 +781,16 @@ function LanguagesStep({
               );
             })}
           </div>
+          {noRoom ? (
+            <p className="notice-text" role="status">
+              There isn't enough free disk space for a translation engine right now. Your languages are saved; free
+              up some space and download an engine later in Settings → Languages.
+            </p>
+          ) : needsDownload ? (
+            <p className="first-run-note">
+              Before the download starts, you'll be asked to accept Google's Gemma Terms of Use.
+            </p>
+          ) : null}
         </>
       ) : languages.length > 0 ? (
         <p className="first-run-note">Translation needs an Apple Silicon Mac. Your choice is saved for later.</p>
@@ -971,13 +1059,23 @@ function PracticeItem({ done, active, children }: { done: boolean; active: boole
   );
 }
 
-function DownloadLine({ model, status }: { model: DownloadableModel | null; status: ModelDownloadStatus }) {
+function DownloadLine({
+  model,
+  status,
+  waiting = 0,
+}: {
+  model: DownloadableModel | null;
+  status: ModelDownloadStatus;
+  /** Downloads queued after this one. */
+  waiting?: number;
+}) {
   const name = model ? getModelPresentation(model).friendlyName : status.modelName;
   return (
     <div className="first-run-download">
       <span>
         Downloading {name}
         {status.progressPercent != null ? ` · ${Math.round(status.progressPercent)} %` : "…"}
+        {waiting > 0 ? ` · ${waiting} more after this` : ""}
       </span>
       <Progress value={status.progressPercent} label={`Downloading ${name}`} />
       <Button variant="ghost" onClick={() => void cancelModelDownload(status.modelId).catch(() => undefined)}>
@@ -997,6 +1095,10 @@ function CheckMark({ done }: { done: boolean }) {
 
 function supports(model: DownloadableModel, context: ModelUseContext) {
   return !model.capabilities || model.capabilities.supportedContexts.includes(context);
+}
+
+function fitsBytes(bytes: number, freeSpace: number | null) {
+  return freeSpace === null || bytes === 0 || bytes + DISK_HEADROOM_BYTES <= freeSpace;
 }
 
 function fits(model: DownloadableModel | undefined, freeSpace: number | null) {

@@ -488,7 +488,24 @@ impl RecordingController {
             .unwrap_or(false);
         // Also runs at startup, so the first dictation skips CoreAudio's device scan.
         if changed || self.input_cache.get(&device_name).is_none() {
-            self.input_cache.refresh_in_background(device_name);
+            self.warm_input(device_name);
+        }
+    }
+
+    /// Looks up the microphone ahead of the first dictation, once the user has
+    /// allowed it. Reading the device counts as using the microphone on macOS,
+    /// so before that it would show the system prompt with no context; the
+    /// welcome setup asks instead.
+    pub fn warm_input_if_allowed(&self) {
+        let preferred = self.preferred_input_device.lock().ok().and_then(|preferred| preferred.clone());
+        if self.input_cache.get(&preferred).is_none() {
+            self.warm_input(preferred);
+        }
+    }
+
+    fn warm_input(&self, preferred: Option<String>) {
+        if crate::permissions::microphone_permission() == crate::permissions::MicrophonePermission::Granted {
+            self.input_cache.refresh_in_background(preferred);
         }
     }
 

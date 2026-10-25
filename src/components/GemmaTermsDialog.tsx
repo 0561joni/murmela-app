@@ -59,8 +59,9 @@ export function GemmaTermsDialog({
     }
   }
 
+  // Above the welcome setup too, which asks for these terms while it is open.
   return createPortal(
-    <div className="model-info-backdrop">
+    <div className="model-info-backdrop is-above-setup">
       <div
         className="model-info-dialog glass-panel terms-dialog"
         role="dialog"

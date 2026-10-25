@@ -325,34 +325,38 @@ fn simulate_paste() -> Result<()> {
 /// The app to bring back before pasting. None when Murmela itself is in front
 /// (for example its welcome practice box): ⌘V then goes to its own window, and
 /// a development build has no bundle identifier to reactivate.
+///
+/// Read from NSWorkspace, which needs no permission. Asking System Events
+/// instead made macOS ask to let Murmela "control System Events" on the first
+/// dictation.
 pub fn detect_frontmost_paste_target() -> Option<PasteTarget> {
-    let script = r#"tell application "System Events"
-    set frontApp to first application process whose frontmost is true
-    set bundleId to ""
-    try
-        set bundleId to bundle identifier of frontApp
-    end try
-    return (unix id of frontApp as text) & " " & bundleId
-end tell"#;
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(script)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    paste_target_from(&String::from_utf8_lossy(&output.stdout), std::process::id())
+    let (pid, bundle_id) = frontmost_application()?;
+    paste_target_from(pid, &bundle_id, std::process::id())
 }
 
-/// Parses "<pid> <bundle id>" from the frontmost-app script.
-fn paste_target_from(output: &str, own_pid: u32) -> Option<PasteTarget> {
-    let (pid, bundle_id) = output.trim().split_once(' ').unwrap_or((output.trim(), ""));
-    if pid.parse::<u32>().ok() == Some(own_pid) {
+/// The frontmost app's process id and bundle identifier ("" when it has none).
+fn frontmost_application() -> Option<(i32, String)> {
+    use objc2::msg_send;
+    use objc2::rc::autoreleasepool;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    autoreleasepool(|_| unsafe {
+        let workspace: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
+        let app: *mut AnyObject = msg_send![workspace.as_ref()?, frontmostApplication];
+        let app = app.as_ref()?;
+        let pid: i32 = msg_send![app, processIdentifier];
+        let bundle_id: *mut NSString = msg_send![app, bundleIdentifier];
+        Some((pid, bundle_id.as_ref().map(|id| id.to_string()).unwrap_or_default()))
+    })
+}
+
+fn paste_target_from(pid: i32, bundle_id: &str, own_pid: u32) -> Option<PasteTarget> {
+    if u32::try_from(pid).ok() == Some(own_pid) {
         return None;
     }
     let bundle_id = bundle_id.trim();
-    (!bundle_id.is_empty() && bundle_id != "missing value").then(|| PasteTarget(bundle_id.to_string()))
+    (!bundle_id.is_empty()).then(|| PasteTarget(bundle_id.to_string()))
 }
 
 #[cfg(test)]
@@ -361,10 +365,18 @@ mod tests {
 
     #[test]
     fn murmela_in_front_needs_no_app_to_reactivate() {
-        assert_eq!(paste_target_from("42 com.apple.TextEdit\n", 7).map(|t| t.0), Some("com.apple.TextEdit".into()));
-        assert!(paste_target_from("7 com.murmela.app", 7).is_none(), "Murmela itself");
-        assert!(paste_target_from("42 missing value", 7).is_none());
-        assert!(paste_target_from("42 ", 7).is_none());
+        assert_eq!(paste_target_from(42, "com.apple.TextEdit", 7).map(|t| t.0), Some("com.apple.TextEdit".into()));
+        assert!(paste_target_from(7, "com.murmela.app", 7).is_none(), "Murmela itself");
+        assert!(paste_target_from(42, "", 7).is_none(), "no bundle to reactivate");
+    }
+
+    #[test]
+    fn reads_the_frontmost_app_without_system_events() {
+        // Runs in the test process; NSWorkspace answers without any permission.
+        // A headless run may have no frontmost app, which is fine.
+        if let Some((pid, _)) = frontmost_application() {
+            assert!(pid > 0);
+        }
     }
 
     #[test]

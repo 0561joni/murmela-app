@@ -32,6 +32,7 @@ pub mod review;
 pub mod review_jobs;
 pub mod review_media;
 pub mod settings;
+pub mod self_install;
 pub mod shutdown;
 pub mod single_instance;
 pub mod sound;

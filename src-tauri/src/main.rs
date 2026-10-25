@@ -1282,6 +1282,11 @@ fn get_dictation_readiness(
         .list_models()
         .map_err(|error| error.to_string())?;
     let mut status = state.dictation_controller.status();
+    let microphone = permissions::microphone_permission();
+    // Skipped at startup until the microphone was allowed; catch up now.
+    if microphone == permissions::MicrophonePermission::Granted {
+        state.recording_controller.warm_input_if_allowed();
+    }
     // The 🌐 / Right ⌥ listener needs Accessibility; once granted, start it.
     if !status.is_registered
         && key_gesture::is_key_gesture(&settings.shortcut)
@@ -1302,7 +1307,7 @@ fn get_dictation_readiness(
             settings.shortcut_dictation_selected_model_id.as_deref(),
             model_metadata::ModelUseContext::ShortcutDictation,
         ),
-        microphone: permissions::microphone_permission(),
+        microphone,
         first_run_completed: storage::first_run_completed(state.inner())
             .map_err(|error| error.to_string())?,
         shortcut_registered: status.is_registered,
@@ -1336,6 +1341,16 @@ async fn check_for_updates(app: tauri::AppHandle) -> Result<updates::UpdateStatu
 #[tauri::command]
 async fn download_update_as_free(app: tauri::AppHandle) -> Result<updates::UpdateStatus, String> {
     updates::download_as_free(&app).await.map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn download_update(app: tauri::AppHandle) -> Result<updates::UpdateStatus, String> {
+    updates::download(&app).await.map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+fn install_update_in_home_applications(app: tauri::AppHandle) -> Result<(), String> {
+    updates::install_in_home_applications(&app).map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -1829,6 +1844,8 @@ fn main() {
             get_update_status,
             check_for_updates,
             install_update_and_restart,
+            download_update,
+            install_update_in_home_applications,
             download_update_as_free,
             get_globe_key_action,
             open_keyboard_settings,

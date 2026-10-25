@@ -925,6 +925,18 @@ export function App() {
     [],
   );
 
+  // The microphone can be allowed outside Murmela's own button: a macOS prompt
+  // from an earlier start, or System Settings. Until it is, keep checking while
+  // the window is visible, so the setup ticks it off by itself.
+  const microphoneAllowed = readiness === null || readiness.microphone === "granted";
+  useEffect(() => {
+    if (microphoneAllowed) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshReadiness();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [microphoneAllowed, refreshReadiness]);
+
   const handleRequestMicrophone = useCallback(async () => {
     const state = await requestMicrophoneAccess();
     if (state === "not_determined") pollMicrophone((next) => next !== "not_determined");

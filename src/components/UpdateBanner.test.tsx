@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const apiMocks = vi.hoisted(() => ({
   installUpdateAndRestart: vi.fn(),
+  downloadUpdate: vi.fn(),
+  installUpdateInHomeApplications: vi.fn(),
   downloadUpdateAsFree: vi.fn(),
   openProPage: vi.fn(),
 }));
@@ -21,13 +23,36 @@ const ready = {
   notes: "Faster live dictation.",
   message: null,
   lastCheckedMs: 1,
+  progress: null,
   proUpdatesUntil: null,
 };
 
 describe("UpdateBanner", () => {
-  it("stays hidden until a release is downloaded", () => {
-    render(<UpdateBanner status={{ ...ready, state: "downloading" }} />);
-    expect(screen.queryByText(/is ready/)).toBeNull();
+  it("announces a new release and downloads it only on request", async () => {
+    apiMocks.downloadUpdate.mockResolvedValue({ ...ready });
+    render(<UpdateBanner status={{ ...ready, state: "available" }} />);
+    expect(screen.getByText("Murmela 0.2.0 is available")).toBeTruthy();
+    expect(apiMocks.downloadUpdate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Download update" }));
+    await waitFor(() => expect(apiMocks.downloadUpdate).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows download progress without buttons", () => {
+    render(<UpdateBanner status={{ ...ready, state: "downloading", progress: 42 }} />);
+    expect(screen.getByText("Downloading Murmela 0.2.0 · 42 %")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("stays visible and explains the choices when the update can't be installed", async () => {
+    apiMocks.installUpdateInHomeApplications.mockResolvedValue(undefined);
+    apiMocks.installUpdateAndRestart.mockRejectedValue("Failed to move the new app into place");
+    render(<UpdateBanner status={{ ...ready, state: "cannot_install" }} />);
+    expect(screen.getByText("Murmela 0.2.0 couldn't be installed")).toBeTruthy();
+    expect(screen.getByText(/isn't allowed to change apps in the Applications folder/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText(/Failed to move the new app into place/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Install in my Applications folder" }));
+    await waitFor(() => expect(apiMocks.installUpdateInHomeApplications).toHaveBeenCalledTimes(1));
   });
 
   it("restarts into the downloaded release", async () => {

@@ -2,8 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>Murmela needs permission to control System Events so it can paste shortcut dictation into the active app.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Murmela needs microphone access to record local dictation and transcribe your speech on device.</string>
   <key>NSAudioCaptureUsageDescription</key>

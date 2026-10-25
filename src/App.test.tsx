@@ -28,9 +28,12 @@ vi.mock("./lib/api", async (importOriginal) => ({
 
 vi.mock("./screens/DictateScreen", () => ({
   DictateScreen: ({ readiness }: { readiness: DictationReadiness | null }) => (
-    <output data-testid="accessibility-readiness">
-      {String(readiness?.accessibilityGranted ?? false)}
-    </output>
+    <>
+      <output data-testid="accessibility-readiness">
+        {String(readiness?.accessibilityGranted ?? false)}
+      </output>
+      <output data-testid="microphone-readiness">{readiness?.microphone ?? ""}</output>
+    </>
   ),
 }));
 
@@ -113,6 +116,21 @@ describe("App readiness lifecycle", () => {
       );
     });
   });
+  it("notices by itself when the microphone gets allowed outside the app", async () => {
+    apiMocks.getDictationReadiness.mockResolvedValue({ ...accessMissing, microphone: "not_determined" });
+    render(<App />);
+    await waitFor(() => expect(screen.getByTestId("microphone-readiness").textContent).toBe("not_determined"));
+    // Allowed in a macOS prompt or System Settings: no click in Murmela, no focus change.
+    apiMocks.getDictationReadiness.mockResolvedValue({ ...accessMissing, microphone: "granted" });
+    await waitFor(() => expect(screen.getByTestId("microphone-readiness").textContent).toBe("granted"), {
+      timeout: 4000,
+    });
+    // Once allowed, the checking stops.
+    const calls = apiMocks.getDictationReadiness.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(apiMocks.getDictationReadiness.mock.calls.length).toBe(calls);
+  }, 10_000);
+
   it("opens the guided setup on a fresh install whose shortcut cannot work yet", async () => {
     apiMocks.getDictationReadiness.mockResolvedValue({
       ...accessMissing,

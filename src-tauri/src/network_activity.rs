@@ -74,7 +74,7 @@ impl Destination {
                 "Downloads the speech, translation and voice-activity models you choose. Nothing is uploaded."
             }
             Destination::GitHub => {
-                "Checks for a new version of Murmela and downloads it, only while automatic updates are on or when you press Check now."
+                "Checks for a new version of Murmela while automatic updates are on or when you press Check now, and downloads it when you choose Download update."
             }
             Destination::LemonSqueezy => {
                 "Activates Murmela Pro once with your license key, and frees this Mac's slot if you deactivate it. Pro then works offline."

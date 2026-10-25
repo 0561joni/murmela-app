@@ -566,8 +566,12 @@ export type UpdateState =
   | "idle"
   | "checking"
   | "up_to_date"
+  /** A newer release exists; it downloads when the user asks. */
+  | "available"
   | "downloading"
   | "ready"
+  /** The downloaded release couldn't replace this copy of Murmela. */
+  | "cannot_install"
   | "failed"
   /** A newer release exists, but this Mac's Pro key doesn't cover it. */
   | "needs_renewal";
@@ -580,6 +584,8 @@ export interface UpdateStatus {
   notes: string | null;
   message: string | null;
   lastCheckedMs: number | null;
+  /** While downloading: percent done, when the size is known. */
+  progress: number | null;
   /** With `needs_renewal`: the last day (YYYY-MM-DD) of the Pro key's update year. */
   proUpdatesUntil: string | null;
 }

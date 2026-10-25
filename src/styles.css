@@ -3674,6 +3674,83 @@ html.overlay-window body {
   display: flex;
   gap: var(--space-2);
 }
+.update-banner-copy {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.update-banner-copy p {
+  margin: 0;
+}
+.update-banner-blocked {
+  display: grid;
+  gap: var(--space-3);
+}
+.update-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+.update-choice {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--color-grouped);
+  box-shadow: inset 0 0 0 1px var(--color-divider);
+}
+.update-choice p {
+  margin: 0;
+}
+.update-choice .button {
+  margin-top: auto;
+}
+.update-picture {
+  width: 100%;
+  max-width: 220px;
+  height: 64px;
+}
+.update-picture-folder {
+  fill: var(--color-primary-tint);
+  stroke: var(--color-primary);
+  stroke-width: 1.5;
+}
+.update-picture-folder.is-locked {
+  fill: var(--color-subtle);
+  stroke: var(--color-text-muted);
+}
+.update-picture-lock {
+  fill: var(--color-text-muted);
+}
+.update-picture-stroke,
+.update-picture-check {
+  fill: none;
+  stroke: var(--color-text-muted);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.update-picture-check {
+  stroke: var(--color-primary);
+  stroke-width: 2.5;
+}
+.update-picture-line {
+  fill: var(--color-divider);
+}
+.update-picture-field {
+  fill: var(--color-canvas);
+  stroke: var(--color-divider);
+}
+.update-picture-button {
+  fill: var(--color-primary);
+}
+.update-picture-label {
+  fill: var(--color-text-2);
+  font: var(--text-small);
+}
 .review-job {
   display: flex;
   align-items: center;

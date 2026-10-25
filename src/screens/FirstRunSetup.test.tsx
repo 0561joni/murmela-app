@@ -8,6 +8,7 @@ import type {
   QuickDictationStatusResponse,
 } from "../types/domain";
 import { FirstRunSetup, type FirstRunSetupProps } from "./FirstRunSetup";
+import { getTranslatorStatus } from "../lib/textTranslation";
 
 const api = vi.hoisted(() => ({
   catalog: [] as DownloadableModel[],
@@ -166,10 +167,10 @@ describe("FirstRunSetup", () => {
     render(<FirstRunSetup {...current} />);
     expect(await screen.findByRole("heading", { name: "What Murmela needs" })).toBeTruthy();
     expect(screen.getByText("Microphone access")).toBeTruthy();
-    const engines = await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    const engines = await screen.findByRole("group", { name: "Speech engines to download" });
     await waitFor(() => {
-      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
-      expect(radios.find((radio) => radio.checked)?.value).toBe(livePair.id);
+      const boxes = within(engines).getAllByRole("checkbox") as HTMLInputElement[];
+      expect(boxes.filter((box) => box.checked).map((box) => box.value)).toEqual([livePair.id]);
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(api.startModelDownload).not.toHaveBeenCalled();
@@ -197,19 +198,151 @@ describe("FirstRunSetup", () => {
   it("preselects a smaller engine when the recommended one does not fit", async () => {
     api.freeSpace = 2_000_000_000;
     render(<FirstRunSetup {...props()} />);
-    const engines = await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    const engines = await screen.findByRole("group", { name: "Speech engines to download" });
     await waitFor(() => {
-      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
-      expect(radios.find((radio) => radio.checked)?.value).toBe(whisper.id);
+      const boxes = within(engines).getAllByRole("checkbox") as HTMLInputElement[];
+      expect(boxes.filter((box) => box.checked).map((box) => box.value)).toEqual([whisper.id]);
     });
     fireEvent.click(screen.getByRole("button", { name: /^Download .+ and continue$/ }));
     await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(whisper.id));
   });
 
+  it("downloads several engines one after the other and dictates with the highest", async () => {
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    const engines = await screen.findByRole("group", { name: "Speech engines to download" });
+    await waitFor(() => expect((within(engines).getByDisplayValue(livePair.id) as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(within(engines).getByDisplayValue(whisper.id));
+    expect(engines.textContent).toContain("Used for dictation");
+    // 1.4 GB + 574 MB, added up.
+    fireEvent.click(screen.getByRole("button", { name: "Download 2.0 GB and continue" }));
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(livePair.id));
+    // One download at a time: the second waits for the first.
+    expect(api.startModelDownload).toHaveBeenCalledTimes(1);
+    const done = (id: string) =>
+      api.listener?.({
+        modelId: id,
+        modelName: id,
+        state: "completed",
+        downloadedBytes: 1,
+        totalBytes: 1,
+        progressPercent: 100,
+        errorMessage: null,
+        currentArtifact: null,
+        artifactIndex: null,
+        artifactCount: 1,
+      });
+    done(livePair.id);
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(whisper.id));
+    await waitFor(() => expect(current.onUseModel).toHaveBeenCalledWith(livePair.id));
+    done(whisper.id);
+    expect(current.onUseModel).not.toHaveBeenCalledWith(whisper.id);
+  });
+
+  it("only offers engines that still fit next to the ticked ones", async () => {
+    // Room for Live dictation (1.4 GB) and Whisper (0.6 GB), not also Qwen (4.7 GB).
+    api.freeSpace = 4_500_000_000;
+    render(<FirstRunSetup {...props()} />);
+    const engines = await screen.findByRole("group", { name: "Speech engines to download" });
+    await waitFor(() => expect((within(engines).getByDisplayValue(livePair.id) as HTMLInputElement).checked).toBe(true));
+    expect((within(engines).getByDisplayValue(qwen.id) as HTMLInputElement).disabled).toBe(true);
+    expect((within(engines).getByDisplayValue(whisper.id) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("queues the translation engine behind the speech engine", async () => {
+    api.catalog = [whisper, livePair, gemma4b];
+    api.termsAccepted = true;
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    await screen.findByRole("group", { name: "Speech engines to download" });
+    fireEvent.click(await screen.findByRole("button", { name: /^Download .+ and continue$/ }));
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(livePair.id));
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Download 3.2 GB and continue" }));
+    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+    expect(api.startModelDownload).not.toHaveBeenCalledWith(gemma4b.id);
+    expect(screen.getByText(/1 more after this/)).toBeTruthy();
+    api.listener?.({
+      modelId: livePair.id,
+      modelName: livePair.id,
+      state: "completed",
+      downloadedBytes: 1,
+      totalBytes: 1,
+      progressPercent: 100,
+      errorMessage: null,
+      currentArtifact: null,
+      artifactIndex: null,
+      artifactCount: 1,
+    });
+    await waitFor(() => expect(api.startModelDownload).toHaveBeenCalledWith(gemma4b.id));
+  });
+
+  it("shows the Gemma terms above the setup when translation needs them", async () => {
+    api.catalog = [whisper, livePair, gemma4b, gemma12b];
+    render(<FirstRunSetup {...props()} />);
+    await screen.findByRole("group", { name: "Speech engines to download" });
+    fireEvent.click(await screen.findByRole("button", { name: /^Download .+ and continue$/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    expect(screen.getByText(/asked to accept Google's Gemma Terms of Use/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Download 3.2 GB and continue" }));
+    const terms = await screen.findByRole("dialog", { name: "Gemma Terms of Use" });
+    // The setup is a modal too: without this the terms open hidden behind it.
+    expect(terms.parentElement?.classList.contains("is-above-setup")).toBe(true);
+  });
+
+  it("doesn't reserve disk space for speech engines skipped with Not now", async () => {
+    // 5 GB: TranslateGemma 4B (3.2 GB + 1 GB headroom) fits only if Live dictation isn't coming.
+    api.freeSpace = 5_000_000_000;
+    api.catalog = [whisper, livePair, gemma4b, gemma12b];
+    render(<FirstRunSetup {...props()} />);
+    await screen.findByRole("group", { name: "Speech engines to download" });
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    const button = (await screen.findByRole("button", { name: "Download 3.2 GB and continue" })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+  });
+
+  it("saves the languages for later when no translation engine fits", async () => {
+    api.freeSpace = 3_000_000_000;
+    api.catalog = [whisper, livePair, gemma4b, gemma12b];
+    const current = props();
+    render(<FirstRunSetup {...current} />);
+    await screen.findByRole("group", { name: "Speech engines to download" });
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    expect(screen.getByText(/isn't enough free disk space for a translation engine/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save and continue" }));
+    await waitFor(() => expect(current.onSaveSettings).toHaveBeenCalledWith({ translationCycleLanguages: ["en"] }));
+    expect(await screen.findByRole("heading", { name: "Let Murmela listen and type" })).toBeTruthy();
+    expect(api.startModelDownload).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the compact translation engine when the larger one doesn't fit", async () => {
+    // Enough memory to recommend 12B, but only room for 4B.
+    vi.mocked(getTranslatorStatus).mockResolvedValueOnce({ memoryAvailableBytes: 16e9 } as never);
+    api.freeSpace = 9_000_000_000;
+    api.catalog = [whisper, livePair, gemma4b, gemma12b];
+    render(<FirstRunSetup {...props()} />);
+    await screen.findByRole("group", { name: "Speech engines to download" });
+    fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Yes, translate too/ }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "English" }));
+    const engines = await screen.findByRole("radiogroup", { name: "Translation engine" });
+    await waitFor(() => {
+      const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.find((radio) => radio.checked)?.value).toBe(gemma4b.id);
+    });
+    expect(screen.getByRole("button", { name: "Download 3.2 GB and continue" })).toBeTruthy();
+  });
+
   it("downloads nothing when the user picks Not now", async () => {
     const current = props();
     render(<FirstRunSetup {...current} />);
-    await screen.findByRole("radiogroup", { name: "Dictation engine" });
+    await screen.findByRole("group", { name: "Speech engines to download" });
     fireEvent.click(await screen.findByRole("button", { name: "Not now" }));
     expect(await screen.findByRole("heading", { name: "Translate as you speak" })).toBeTruthy();
     expect(api.startModelDownload).not.toHaveBeenCalled();
@@ -286,7 +419,7 @@ describe("FirstRunSetup", () => {
       const radios = within(engines).getAllByRole("radio") as HTMLInputElement[];
       expect(radios.map((radio) => radio.checked)).toEqual([true, false]);
     });
-    fireEvent.click(screen.getByRole("button", { name: "Download and continue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download 3.2 GB and continue" }));
     await waitFor(() => expect(current.onSaveSettings).toHaveBeenCalledWith({ translationCycleLanguages: ["de", "fr"] }));
     // Not yet accepted: the terms come first, then the download.
     fireEvent.click(await screen.findByRole("checkbox", { name: /I agree/ }));

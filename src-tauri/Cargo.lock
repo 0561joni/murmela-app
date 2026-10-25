@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "murmela"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "anyhow",
  "block2",
@@ -2445,6 +2445,7 @@ dependencies = [
  "chrono",
  "cpal",
  "dispatch2",
+ "flate2",
  "fs2",
  "hound",
  "libc",
@@ -2461,6 +2462,7 @@ dependencies = [
  "sherpa-onnx",
  "strsim",
  "symphonia",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -2468,6 +2470,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-updater",
+ "tempfile",
  "unicode-normalization",
  "uuid",
  "whatlang",

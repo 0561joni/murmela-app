@@ -1,5 +1,15 @@
 # Release notes
 
+## Murmela 1.2.4: updates without admin rights
+
+- Updates install without an administrator password, also on Mac accounts without admin rights, as is common on company Macs. If Murmela still can't update itself where it is, it offers to install the new version in your own Applications folder.
+- Murmela now tells you when a new version is out and downloads it only when you click Download update. If an update can't be installed, the banner stays and says why.
+- If updating from 1.2.3 or earlier fails on an account without admin rights, download Murmela once from murmela.com. Later updates then install by themselves.
+- No more "Murmela wants to control System Events" prompt: Murmela no longer needs that permission.
+- macOS now asks for the microphone in the welcome setup instead of at the first start, and the setup ticks it off by itself once it is allowed.
+- The welcome setup can download several speech engines, one after the other. A translation engine waits its turn instead of failing.
+- Fixed: in the welcome setup, "Download and continue" for translation seemed to do nothing, because the Gemma terms opened hidden behind the setup.
+
 ## Murmela 1.2.3: a friendlier first start
 
 - Fixed: on a Mac that had not yet allowed Accessibility, Murmela could stop at "Murmela couldn't start". It now starts normally and asks for the permission in its setup.

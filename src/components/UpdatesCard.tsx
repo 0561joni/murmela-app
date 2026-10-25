@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useUpdateStatus } from "../hooks/useUpdateStatus";
+import { downloadUpdate } from "../lib/api";
 import { describeError, formatCalendarDay } from "../lib/formatting";
 import type { UpdateStatus } from "../types/domain";
 
@@ -7,10 +8,14 @@ function describeStatus(status: UpdateStatus | null): string {
   switch (status?.state) {
     case "checking":
       return "Checking for updates…";
+    case "available":
+      return `Murmela ${status.version ?? ""} is available.`;
     case "downloading":
-      return `Downloading Murmela ${status.version ?? ""}…`;
+      return `Downloading Murmela ${status.version ?? ""}${status.progress != null ? ` · ${Math.round(status.progress)} %` : "…"}`;
     case "ready":
       return `Murmela ${status.version ?? ""} is downloaded. It installs when you restart or quit Murmela.`;
+    case "cannot_install":
+      return `Murmela ${status.version ?? ""} couldn't be installed, because this Mac account may not change the Applications folder. The banner at the top shows what to do.`;
     case "up_to_date":
       return "Murmela is up to date.";
     case "failed":
@@ -18,7 +23,7 @@ function describeStatus(status: UpdateStatus | null): string {
     case "needs_renewal":
       return `Murmela ${status.version ?? ""} is out. Your Pro updates ended${
         status.proUpdatesUntil ? ` on ${formatCalendarDay(status.proUpdatesUntil)}` : ""
-      }, so it isn't downloaded automatically. Renew Pro or upgrade to Lifetime, or install it as Free from the banner.`;
+      }, so Pro features in it need a renewal or Lifetime. Renew Pro, or install it as Free from the banner.`;
     default:
       return "";
   }
@@ -37,12 +42,15 @@ export function UpdatesCard({
   const [error, setError] = useState<string | null>(null);
   const busy = status?.state === "checking" || status?.state === "downloading";
 
-  async function check() {
+  const available = status?.state === "available";
+
+  async function checkOrDownload() {
     setError(null);
     try {
-      await checkNow();
+      if (available) await downloadUpdate();
+      else await checkNow();
     } catch (reason) {
-      setError(describeError(reason, "Murmela could not check for updates."));
+      setError(describeError(reason, available ? "The update could not be downloaded." : "Murmela could not check for updates."));
     }
   }
 
@@ -53,8 +61,8 @@ export function UpdatesCard({
         <div className="setting-copy">
           <p className="setting-title">Check for updates automatically</p>
           <p className="muted">
-            Murmela asks GitHub every few hours whether a new version exists and downloads it in the background. No
-            recordings, text or personal data are sent.
+            Murmela asks GitHub every few hours whether a new version exists and tells you. It downloads only when
+            you choose to. No recordings, text or personal data are sent.
           </p>
         </div>
         <div className="setting-control">
@@ -80,12 +88,12 @@ export function UpdatesCard({
         <div className="setting-control">
           <button
             type="button"
-            className="button button-secondary"
-            onClick={() => void check()}
-            disabled={busy || status?.state === "ready"}
+            className={available ? "button button-primary" : "button button-secondary"}
+            onClick={() => void checkOrDownload()}
+            disabled={busy || status?.state === "ready" || status?.state === "cannot_install"}
             aria-busy={busy || undefined}
           >
-            Check now
+            {available ? "Download update" : "Check now"}
           </button>
         </div>
       </div>
