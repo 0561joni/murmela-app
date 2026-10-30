@@ -3,11 +3,14 @@ import { ActionButton, Button, PageHeader } from "../components/Feedback";
 import { AppIcon, IconButton } from "../components/IconButton";
 import { AlternativesMenu, type AlternativesState } from "../components/AlternativesMenu";
 import { GemmaTermsDialog } from "../components/GemmaTermsDialog";
+import { AccessibilityExplainer } from "../components/AccessibilityExplainer";
+import { insertIntoLastApp, insertTargetName, recentCopy } from "../lib/quickTranslateApi";
 import { ModelDownloadCard } from "../components/ModelDownloadCard";
 import {
   acceptModelTerms,
   cancelModelDownload,
   copyTextToClipboard,
+  requestAccessibilityAccess,
   getModelDownloadStatuses,
   getModelTermsStatus,
   listDownloadableModels,
@@ -58,13 +61,17 @@ import type { AppSettings, DownloadableModel, ModelDownloadStatus, TranscriptSum
 
 export type TranslateOpenRequest =
   | { kind: "saved"; id: string; nonce: number }
-  | { kind: "file"; path: string; nonce: number };
+  | { kind: "file"; path: string; nonce: number }
+  /** Selected text from another app ("Edit in Murmela" in the ⌘C-twice panel). */
+  | { kind: "text"; text: string; source: string | null; target: string; nonce: number };
 
 interface TranslateScreenProps {
   settings: AppSettings | null;
   transcripts: TranscriptSummary[];
   openRequest: TranslateOpenRequest | null;
   dragging: boolean;
+  /** The Translate screen is the one on view. */
+  active?: boolean;
   onOpenSettings: () => void;
   onLibraryChanged: () => void;
 }
@@ -172,6 +179,11 @@ export function TranslateScreen(props: TranslateScreenProps) {
   const [savedToLibrary, setSavedToLibrary] = useState(false);
   const [wordEdit, setWordEdit] = useState<WordEdit | null>(null);
   const [lastEdit, setLastEdit] = useState<LastEdit | null>(null);
+  /** The app "Insert into…" pastes into, and whether to explain Accessibility first. */
+  const [insertTarget, setInsertTarget] = useState<string | null>(null);
+  const [explainAccessibility, setExplainAccessibility] = useState(false);
+  /** The text was filled in from the clipboard when the screen opened. */
+  const [fromClipboard, setFromClipboard] = useState(false);
   const [wordAnchor, setWordAnchor] = useState<HTMLElement | null>(null);
   const wordEditRef = useRef<WordEdit | null>(null);
   wordEditRef.current = wordEdit;
@@ -558,6 +570,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
   }
 
   function loadText(text: string, info: DocumentInfo, language?: { source: string | null; target: string; tone: TranslationTone }) {
+    setFromClipboard(false);
     stop();
     closeAlternatives();
     setLastEdit(null);
@@ -602,6 +615,10 @@ export function TranslateScreen(props: TranslateScreenProps) {
           if (!disposed) loadText(file.text, newDocument("file", file.name));
           return;
         }
+        if (request.kind === "text") {
+          loadText(request.text, newDocument(), { source: request.source, target: request.target, tone });
+          return;
+        }
         const saved = await getTextTranslation(request.id);
         if (disposed) return;
         if (!saved) {
@@ -630,6 +647,47 @@ export function TranslateScreen(props: TranslateScreenProps) {
       disposed = true;
     };
   }, [props.openRequest?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Coming back to Murmela: fill an empty screen with what was just copied
+  // elsewhere, and learn which app "Insert into…" goes back to.
+  useEffect(() => {
+    if (!props.active) return;
+    let current = true;
+    const refresh = () => {
+      void insertTargetName()
+        .then((name) => current && setInsertTarget(name))
+        .catch(() => undefined);
+      if (sourceRef.current?.value.trim() || dictating) return;
+      void recentCopy(60)
+        .then((text) => {
+          if (!current || !text || sourceRef.current?.value.trim()) return;
+          loadText(text, newDocument());
+          setFromClipboard(true);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      current = false;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [props.active, dictating]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [inserted, setInserted] = useState(false);
+  async function insertIntoApp() {
+    try {
+      const outcome = await insertIntoLastApp(outputText);
+      if (outcome === "needs_accessibility") {
+        setExplainAccessibility(true);
+        return;
+      }
+      setInserted(true);
+      window.setTimeout(() => setInserted(false), 2200);
+    } catch (reason) {
+      setError(describeError(reason, "Couldn't put the translation into the app."));
+    }
+  }
 
   function swapLanguages() {
     if (!effectiveSource) return;
@@ -868,7 +926,10 @@ export function TranslateScreen(props: TranslateScreenProps) {
                 setSavedToLibrary(false);
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (event.key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey) && insertTarget && complete && anyOutput) {
+                  event.preventDefault();
+                  void insertIntoApp();
+                } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.preventDefault();
                   void run(true);
                 } else if (event.key === "Escape" && job) {
@@ -904,6 +965,7 @@ export function TranslateScreen(props: TranslateScreenProps) {
               </span>
             ) : (
               <span className="muted">
+                {fromClipboard ? <span className="translate-clipboard-chip">From clipboard · </span> : null}
                 {documentInfo.fileName ? `${documentInfo.fileName} · ` : ""}
                 {characterCount.toLocaleString()} characters{paragraphCount > 1 ? ` · ${paragraphCount} paragraphs` : ""}
               </span>
@@ -1035,9 +1097,14 @@ export function TranslateScreen(props: TranslateScreenProps) {
                   }}>
                     Save as…
                   </ActionButton>
-                  <ActionButton variant="primary" icon="copy" success="Copied" action={() => copyTextToClipboard(outputText)}>
+                  <ActionButton variant={insertTarget ? "secondary" : "primary"} icon="copy" success="Copied" action={() => copyTextToClipboard(outputText)}>
                     Copy
                   </ActionButton>
+                  {insertTarget ? (
+                    <Button variant="primary" icon={inserted ? "check" : undefined} onClick={() => void insertIntoApp()} title={`Paste the translation where your cursor is in ${insertTarget} (⌘⇧↵)`}>
+                      {inserted ? "Inserted" : `Insert into ${insertTarget}`}
+                    </Button>
+                  ) : null}
                 </span>
               </>
             ) : (
@@ -1046,6 +1113,15 @@ export function TranslateScreen(props: TranslateScreenProps) {
           </div>
         </div>
       </div>
+      {explainAccessibility ? (
+        <AccessibilityExplainer
+          onContinue={async () => {
+            await requestAccessibilityAccess();
+            setExplainAccessibility(false);
+          }}
+          onCancel={() => setExplainAccessibility(false)}
+        />
+      ) : null}
     </section>
   );
 }

@@ -94,6 +94,13 @@ const initialSettings: AppSettings = {
   pasteLastShortcut: "Ctrl+Alt+V",
   seriousMode: false,
   autoUpdateEnabled: true,
+  quickTranslateEnabled: true,
+  quickTranslateShortcut: "DoubleCopy",
+  quickTranslateDisplay: "popup",
+  quickTranslateIgnoredApps: ["com.apple.keychainaccess", "com.apple.Passwords", "com.1password.1password", "com.agilebits.onepassword7"],
+  quickTranslateMyLanguage: null,
+  quickTranslateLastTarget: null,
+  quickTranslateSaveHistory: false,
 };
 
 const asrModel: DownloadableModel = {

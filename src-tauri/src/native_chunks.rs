@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::native_asr::{NativeOutputSegment, NativeWorkerResult};
+use crate::native_asr::{NativeGap, NativeOutputSegment, NativeWorkerResult};
 
 /// Audio both neighbouring chunks transcribe. Long enough that both usually
 /// hear every active speaker and a sentence break to cut at.
@@ -127,6 +127,7 @@ pub fn stitch(chunks: Vec<ChunkTranscript>, voices: &[ChunkVoices]) -> (NativeWo
     let mut output = Vec::<NativeOutputSegment>::new();
     let mut truncated = false;
     let mut warning = None;
+    let mut gaps = Vec::<NativeGap>::new();
     // The previous chunk's segments with global labels, for overlap matching.
     let mut previous: Vec<(i64, i64, Option<usize>)> = Vec::new();
     let mut previous_span: Option<ChunkSpan> = None;
@@ -176,6 +177,14 @@ pub fn stitch(chunks: Vec<ChunkTranscript>, voices: &[ChunkVoices]) -> (NativeWo
             ),
             None => i64::MAX,
         };
+        for gap in &chunk.result.gaps {
+            let start_ms = (chunk.span.start_ms + gap.start_ms).clamp(chunk.span.start_ms, chunk.span.end_ms);
+            let end_ms = (chunk.span.start_ms + gap.end_ms).clamp(start_ms, chunk.span.end_ms);
+            let middle = (start_ms + end_ms) / 2;
+            if middle >= keep_from && middle < keep_until {
+                gaps.push(NativeGap { start_ms, end_ms, ..gap.clone() });
+            }
+        }
         let kept_before = output.len();
         for segment in segments {
             let middle = (segment.start_ms + segment.end_ms) / 2;
@@ -212,7 +221,7 @@ pub fn stitch(chunks: Vec<ChunkTranscript>, voices: &[ChunkVoices]) -> (NativeWo
 
     report.speakers = speakers.len();
     let text = output.iter().map(|segment| segment.text.trim()).collect::<Vec<_>>().join(" ");
-    (NativeWorkerResult { text, segments: output, truncated, warning }, report)
+    (NativeWorkerResult { text, segments: output, truncated, warning, gaps }, report)
 }
 
 fn absolute_segments(chunk: &ChunkTranscript) -> Vec<NativeOutputSegment> {
@@ -531,7 +540,7 @@ mod tests {
     fn chunk(start_ms: i64, end_ms: i64, segments: Vec<NativeOutputSegment>) -> ChunkTranscript {
         ChunkTranscript {
             span: ChunkSpan { start_ms, end_ms },
-            result: NativeWorkerResult { text: String::new(), segments, truncated: false, warning: None },
+            result: NativeWorkerResult { text: String::new(), segments, truncated: false, warning: None, gaps: Vec::new() },
         }
     }
 
@@ -546,6 +555,19 @@ mod tests {
             assert!(pair[0].end_ms - pair[0].start_ms <= 10 * 60_000);
         }
         assert_eq!(plan_chunks(9 * 60_000, 10 * 60_000, |_| 0.0).len(), 1);
+    }
+
+    #[test]
+    fn gaps_move_to_the_recording_timeline_and_are_kept_once() {
+        let gap = |start_ms, end_ms| NativeGap { start_ms, end_ms, reason: "repeated a word".into(), filled_by: None };
+        let mut a = chunk(0, 100_000, vec![segment(0, 30_000, "0", "Hola.")]);
+        // In the overlap both chunks heard; only the one whose side of the cut it is on keeps it.
+        a.result.gaps = vec![gap(10_000, 25_000), gap(80_000, 95_000)];
+        let mut b = chunk(40_000, 160_000, vec![segment(0, 30_000, "0", "Hola.")]);
+        b.result.gaps = vec![gap(40_000, 55_000), gap(100_000, 110_000)];
+        let (result, _) = stitch(vec![a, b], &[]);
+        let spans: Vec<_> = result.gaps.iter().map(|gap| (gap.start_ms, gap.end_ms)).collect();
+        assert_eq!(spans, vec![(10_000, 25_000), (80_000, 95_000), (140_000, 150_000)]);
     }
 
     #[test]

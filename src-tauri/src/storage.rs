@@ -18,7 +18,7 @@ use crate::diarization::{
 };
 use crate::settings::{
     AppSettings, Appearance, DefaultMode, InsertBehavior, LanguageMode, ModelProfile,
-    MotionPreference, SettingsPatch, ShortcutMode,
+    MotionPreference, QuickTranslateDisplay, SettingsPatch, ShortcutMode,
 };
 use crate::speaker_reconciliation::SpeakerAttribution;
 
@@ -116,7 +116,24 @@ pub(crate) fn ensure_schema(connection: &Connection) -> Result<()> {
         connection,
         "translation_cycle_languages",
         "TEXT NOT NULL DEFAULT 'en,de,fr,es-AR'",
-    )
+    )?;
+    // Quick translation, added after 1.2.4. Defaults match schema.sql.
+    let ignored_apps = format!(
+        "TEXT NOT NULL DEFAULT '{}'",
+        crate::quick_translate::DEFAULT_IGNORED_APPS.join(",")
+    );
+    for (column, definition) in [
+        ("quick_translate_enabled", "INTEGER NOT NULL DEFAULT 1"),
+        ("quick_translate_shortcut", "TEXT NOT NULL DEFAULT 'DoubleCopy'"),
+        ("quick_translate_display", "TEXT NOT NULL DEFAULT 'popup'"),
+        ("quick_translate_ignored_apps", ignored_apps.as_str()),
+        ("quick_translate_my_language", "TEXT NULL"),
+        ("quick_translate_last_target", "TEXT NULL"),
+        ("quick_translate_save_history", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        add_settings_column(connection, column, definition)?;
+    }
+    Ok(())
 }
 
 fn add_settings_column(connection: &Connection, column: &str, definition: &str) -> Result<()> {
@@ -326,6 +343,27 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
         auto_update_enabled: patch
             .auto_update_enabled
             .unwrap_or(current.auto_update_enabled),
+        quick_translate_enabled: patch
+            .quick_translate_enabled
+            .unwrap_or(current.quick_translate_enabled),
+        quick_translate_shortcut: patch
+            .quick_translate_shortcut
+            .unwrap_or(current.quick_translate_shortcut),
+        quick_translate_display: patch
+            .quick_translate_display
+            .unwrap_or(current.quick_translate_display),
+        quick_translate_ignored_apps: patch
+            .quick_translate_ignored_apps
+            .unwrap_or(current.quick_translate_ignored_apps),
+        quick_translate_my_language: patch
+            .quick_translate_my_language
+            .unwrap_or(current.quick_translate_my_language),
+        quick_translate_last_target: patch
+            .quick_translate_last_target
+            .unwrap_or(current.quick_translate_last_target),
+        quick_translate_save_history: patch
+            .quick_translate_save_history
+            .unwrap_or(current.quick_translate_save_history),
     };
     if !crate::settings::LIVE_PAIR_CHUNKS_MS.contains(&next.live_pair_chunk_ms) {
         bail!("Choose a live preview chunk of 560 or 1120 ms.");
@@ -347,6 +385,7 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
     if next.translation_cycle_languages.is_empty() {
         bail!("Pick at least one language for the language shortcut.");
     }
+    crate::quick_translate::validate_settings(&next)?;
     let connection = open_connection_by_path(db_path)?;
     connection.execute(
         "UPDATE settings SET default_mode = ?1, shortcut = ?2, shortcut_mode = ?3, language_mode = ?4, fixed_language = ?5, preferred_input_device = ?6, insert_behavior = ?7, launch_at_login_enabled = ?8, metal_enabled = ?9, shortcut_dictation_model_profile = ?10, shortcut_dictation_selected_model_id = ?11, quick_dictate_model_profile = ?12, quick_dictate_selected_model_id = ?13, file_transcribe_model_profile = ?14, file_transcribe_selected_model_id = ?15, save_history = ?16, sounds_enabled = ?17, volume_ducking_enabled = ?18, file_diarization_enabled = ?19, appearance = ?20, motion_preference = ?21, translation_enabled = ?22, translation_cycle_shortcut = ?23, translation_model_id = ?24, live_pair_chunk_ms = ?25, live_pair_keep_loaded = ?26, paste_last_shortcut = ?27, serious_mode = ?28, auto_update_enabled = ?29, translation_cycle_languages = ?30 WHERE id = 1",
@@ -377,6 +416,21 @@ pub fn update_settings_for_db_path(db_path: &Path, patch: SettingsPatch) -> Resu
             next.serious_mode,
             next.auto_update_enabled,
             next.translation_cycle_languages.join(","),
+        ],
+    )?;
+    connection.execute(
+        "UPDATE settings SET quick_translate_enabled = ?1, quick_translate_shortcut = ?2, quick_translate_display = ?3, quick_translate_ignored_apps = ?4, quick_translate_my_language = ?5, quick_translate_last_target = ?6, quick_translate_save_history = ?7 WHERE id = 1",
+        params![
+            next.quick_translate_enabled,
+            next.quick_translate_shortcut,
+            match next.quick_translate_display {
+                QuickTranslateDisplay::Popup => "popup",
+                QuickTranslateDisplay::App => "app",
+            },
+            next.quick_translate_ignored_apps.join(","),
+            next.quick_translate_my_language,
+            next.quick_translate_last_target,
+            next.quick_translate_save_history,
         ],
     )?;
     get_settings_from_db_path(db_path)
@@ -687,7 +741,7 @@ pub(crate) fn open_connection_by_path(db_path: &Path) -> Result<Connection> {
 
 fn query_settings(connection: &Connection) -> Result<AppSettings> {
     let settings = connection.query_row(
-        "SELECT default_mode, shortcut, shortcut_mode, language_mode, fixed_language, preferred_input_device, insert_behavior, launch_at_login_enabled, metal_enabled, shortcut_dictation_model_profile, shortcut_dictation_selected_model_id, quick_dictate_model_profile, quick_dictate_selected_model_id, file_transcribe_model_profile, file_transcribe_selected_model_id, save_history, sounds_enabled, volume_ducking_enabled, file_diarization_enabled, appearance, motion_preference, translation_enabled, translation_cycle_shortcut, translation_model_id, live_pair_chunk_ms, live_pair_keep_loaded, paste_last_shortcut, serious_mode, auto_update_enabled, translation_cycle_languages FROM settings WHERE id = 1",
+        "SELECT default_mode, shortcut, shortcut_mode, language_mode, fixed_language, preferred_input_device, insert_behavior, launch_at_login_enabled, metal_enabled, shortcut_dictation_model_profile, shortcut_dictation_selected_model_id, quick_dictate_model_profile, quick_dictate_selected_model_id, file_transcribe_model_profile, file_transcribe_selected_model_id, save_history, sounds_enabled, volume_ducking_enabled, file_diarization_enabled, appearance, motion_preference, translation_enabled, translation_cycle_shortcut, translation_model_id, live_pair_chunk_ms, live_pair_keep_loaded, paste_last_shortcut, serious_mode, auto_update_enabled, translation_cycle_languages, quick_translate_enabled, quick_translate_shortcut, quick_translate_display, quick_translate_ignored_apps, quick_translate_my_language, quick_translate_last_target, quick_translate_save_history FROM settings WHERE id = 1",
         [],
         map_settings_row,
     )?;
@@ -1146,6 +1200,21 @@ fn map_settings_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppSettings> {
             .filter(|code| !code.is_empty())
             .map(String::from)
             .collect(),
+        quick_translate_enabled: row.get("quick_translate_enabled")?,
+        quick_translate_shortcut: row.get("quick_translate_shortcut")?,
+        quick_translate_display: match row.get::<_, String>("quick_translate_display")?.as_str() {
+            "app" => QuickTranslateDisplay::App,
+            _ => QuickTranslateDisplay::Popup,
+        },
+        quick_translate_ignored_apps: row
+            .get::<_, String>("quick_translate_ignored_apps")?
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect(),
+        quick_translate_my_language: row.get("quick_translate_my_language")?,
+        quick_translate_last_target: row.get("quick_translate_last_target")?,
+        quick_translate_save_history: row.get("quick_translate_save_history")?,
     })
 }
 
@@ -1521,6 +1590,59 @@ mod tests {
         assert!(update_settings_for_db_path(&path, patch(&["original"])).is_err());
         assert!(update_settings_for_db_path(&path, patch(&["de", "xx"])).is_err());
         assert_eq!(get_settings_from_db_path(&path).unwrap().translation_cycle_languages, ["de", "it", "pl"]);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn quick_translate_settings_migrate_into_old_databases() {
+        let path =
+            std::env::temp_dir().join(format!("murmela-quick-translate-{}.sqlite", Uuid::new_v4()));
+        let connection = open_connection_by_path(&path).unwrap();
+        ensure_schema(&connection).unwrap();
+        seed_default_settings(&connection).unwrap();
+        // A 1.2.4 database has none of the quick_translate columns.
+        for column in [
+            "quick_translate_enabled",
+            "quick_translate_shortcut",
+            "quick_translate_display",
+            "quick_translate_ignored_apps",
+            "quick_translate_my_language",
+            "quick_translate_last_target",
+            "quick_translate_save_history",
+        ] {
+            connection
+                .execute_batch(&format!("ALTER TABLE settings DROP COLUMN {column};"))
+                .unwrap();
+        }
+        ensure_schema(&connection).unwrap();
+        let defaults = get_settings_from_db_path(&path).unwrap();
+        assert!(defaults.quick_translate_enabled);
+        assert_eq!(defaults.quick_translate_shortcut, crate::quick_translate::DOUBLE_COPY);
+        assert_eq!(defaults.quick_translate_display, QuickTranslateDisplay::Popup);
+        assert_eq!(defaults.quick_translate_ignored_apps, crate::quick_translate::DEFAULT_IGNORED_APPS);
+        assert_eq!(defaults.quick_translate_my_language, None);
+        assert!(!defaults.quick_translate_save_history, "quick lookups stay out of the Library");
+
+        let updated = update_settings_for_db_path(
+            &path,
+            SettingsPatch {
+                quick_translate_display: Some(QuickTranslateDisplay::App),
+                quick_translate_ignored_apps: Some(vec!["com.apple.Terminal".into()]),
+                quick_translate_my_language: Some(Some("de".into())),
+                quick_translate_last_target: Some(Some("es-AR".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(updated.quick_translate_display, QuickTranslateDisplay::App);
+        assert_eq!(updated.quick_translate_ignored_apps, ["com.apple.Terminal"]);
+        assert_eq!(updated.quick_translate_my_language.as_deref(), Some("de"));
+        assert_eq!(updated.quick_translate_last_target.as_deref(), Some("es-AR"));
+        assert!(update_settings_for_db_path(
+            &path,
+            SettingsPatch { quick_translate_my_language: Some(Some("xx".into())), ..Default::default() },
+        )
+        .is_err());
         let _ = fs::remove_file(path);
     }
 

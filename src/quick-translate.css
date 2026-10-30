@@ -1,0 +1,316 @@
+/* ---------- Quick translation panel ----------
+   The small card that opens by the pointer after ⌘C twice. The window is
+   transparent and exactly as tall as the card (the page reports its height),
+   so the macOS window shadow follows the rounded card. The webview cannot
+   blur the desktop behind it, so the card is nearly opaque instead of glass. */
+html.quick-window,
+html.quick-window body {
+  background: transparent !important;
+  overflow: hidden;
+  margin: 0;
+}
+.quick-window #root {
+  display: block;
+}
+.quick-card {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 10px 12px 9px;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-window) 96%, transparent);
+  box-shadow: inset 0 0 0 0.5px var(--color-border-strong);
+  color: var(--color-text);
+  font: var(--text-body);
+  -webkit-user-select: none;
+  user-select: none;
+  animation: quick-in 140ms ease-out;
+}
+/* The window is only as tall as the card, so the card makes room for an open menu. */
+.quick-card.has-language-menu {
+  min-height: 330px;
+}
+.quick-card.has-pause-menu {
+  min-height: 150px;
+}
+.quick-card.is-empty {
+  height: 1px;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
+}
+@keyframes quick-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quick-card {
+    animation: none;
+  }
+}
+
+.quick-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 26px;
+}
+/* The Murmela ribbon as a small dot: the one brand touch. */
+.quick-mark {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--gradient-orb);
+}
+.quick-direction {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--color-text-muted);
+}
+.quick-source {
+  white-space: nowrap;
+}
+.quick-arrow {
+  color: var(--color-text-muted);
+}
+.quick-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: var(--color-hover);
+  box-shadow: none;
+  color: var(--color-text);
+  font: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+.quick-target .app-icon-wrap {
+  width: 14px;
+  height: 14px;
+}
+.quick-header-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+.quick-icon {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-muted);
+}
+.quick-icon:hover:not(:disabled),
+.quick-icon[aria-expanded="true"] {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+.quick-icon .app-icon-wrap {
+  width: 15px;
+  height: 15px;
+}
+
+.quick-menu {
+  position: absolute;
+  z-index: 2;
+  top: 30px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border-radius: var(--radius);
+  background: var(--color-window);
+  box-shadow: inset 0 0 0 0.5px var(--color-border-strong), 0 8px 24px -8px rgb(0 0 0 / 30%);
+}
+.quick-language-menu {
+  left: 14px;
+  min-width: 210px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.quick-pause-menu {
+  right: 0;
+  min-width: 200px;
+}
+.quick-menu button {
+  width: 100%;
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text);
+  font: var(--text-body);
+  text-align: left;
+  justify-content: flex-start;
+}
+.quick-menu button:hover {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+}
+.quick-menu button:hover .quick-menu-note {
+  color: inherit;
+}
+.quick-menu-check {
+  width: 14px;
+  display: grid;
+  place-items: center;
+}
+.quick-menu-check .app-icon-wrap {
+  width: 13px;
+  height: 13px;
+}
+.quick-menu-note {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font: var(--text-small);
+}
+.quick-menu-hint {
+  padding: 4px 8px 2px;
+  color: var(--color-text-muted);
+  font: var(--text-small);
+}
+
+.quick-body {
+  min-height: 44px;
+  max-height: 380px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--color-subtle);
+}
+.quick-output {
+  display: grid;
+  gap: 10px;
+  font: var(--text-reading);
+  white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+.quick-output p {
+  margin: 0;
+}
+.quick-para.is-clickable {
+  cursor: pointer;
+}
+.quick-para.is-rewriting {
+  opacity: 0.55;
+}
+.quick-word {
+  border-radius: 4px;
+  padding: 0 1px;
+  background: var(--color-primary-tint);
+  color: inherit;
+}
+.quick-output + .quick-shimmer {
+  margin-top: 6px;
+}
+.quick-shimmer {
+  display: grid;
+  gap: 7px;
+  padding: 4px 0;
+}
+.quick-shimmer span {
+  height: 11px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--color-hover) 0%, var(--color-pressed) 50%, var(--color-hover) 100%);
+  background-size: 200% 100%;
+  animation: quick-shimmer 1.1s linear infinite;
+}
+.quick-shimmer span:last-child {
+  width: 62%;
+}
+@keyframes quick-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .quick-shimmer span {
+    animation: none;
+  }
+}
+.quick-status,
+.quick-warning {
+  margin: 6px 0 0;
+  font: var(--text-small);
+  color: var(--color-text-muted);
+}
+.quick-warning {
+  color: var(--color-warning);
+}
+
+.quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.quick-spacer {
+  flex: 1;
+}
+.quick-button {
+  height: 28px;
+  min-height: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  font: var(--text-body);
+  font-weight: var(--weight-medium);
+}
+.quick-button .app-icon-wrap {
+  width: 14px;
+  height: 14px;
+}
+.quick-button.is-primary {
+  color: var(--color-on-primary);
+  background: var(--gradient-primary);
+  border-color: transparent;
+  box-shadow: var(--shadow-primary);
+}
+.quick-button.is-primary:hover:not(:disabled) {
+  background: var(--gradient-primary-hover);
+  color: var(--color-on-primary);
+}
+.quick-button.is-primary kbd {
+  min-width: 0;
+  padding: 0 4px;
+  background: rgb(255 255 255 / 22%);
+  box-shadow: none;
+  color: inherit;
+  line-height: 16px;
+}
+.quick-footnote {
+  margin: 0;
+  color: var(--color-text-muted);
+  font: var(--text-small);
+}
+.quick-access p {
+  margin: 0 0 6px;
+}
+.quick-access .quick-actions {
+  margin-top: 8px;
+}

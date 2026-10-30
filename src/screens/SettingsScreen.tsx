@@ -17,6 +17,7 @@ import { useLicense } from "../hooks/useLicense";
 import { GemmaTermsDialog } from "../components/GemmaTermsDialog";
 import { GlobeKeyNotice } from "../components/GlobeKeyNotice";
 import { IconButton } from "../components/IconButton";
+import { QuickTranslateCard } from "../components/QuickTranslateCard";
 import { OUTPUT_MODES } from "../lib/translationApi";
 import {
   ModelInfoButton,
@@ -90,7 +91,7 @@ const DEFAULT_LANGUAGE_SHORTCUT = "Ctrl+Alt+L";
 /** Control-Option-V; matches settings::DEFAULT_PASTE_LAST_SHORTCUT in the backend. */
 const DEFAULT_PASTE_LAST_SHORTCUT = "Ctrl+Alt+V";
 
-type CaptureField = "shortcut" | "translationCycleShortcut" | "pasteLastShortcut";
+type CaptureField = "shortcut" | "translationCycleShortcut" | "pasteLastShortcut" | "quickTranslateShortcut";
 
 /** Languages every dictation engine accepts as a fixed choice (Live dictation's list). */
 const SPOKEN_LANGUAGES: Array<[string, string]> = [
@@ -1413,6 +1414,16 @@ export function SettingsScreen({
             {fieldFeedback("translationCycleLanguages")}
             <p className="muted">Uses Google&apos;s TranslateGemma (converted by mradermacher), subject to the <a href="https://ai.google.dev/gemma/terms" target="_blank" rel="noreferrer">Gemma terms</a> and <a href="https://ai.google.dev/gemma/prohibited_use_policy" target="_blank" rel="noreferrer">use restrictions</a>. Model information: <a href="https://huggingface.co/google/translategemma-12b-it" target="_blank" rel="noreferrer">12B</a>, <a href="https://huggingface.co/google/translategemma-4b-it" target="_blank" rel="noreferrer">4B</a></p>
           </article>
+          <QuickTranslateCard
+            settings={settings}
+            isSaving={isSaving}
+            hasEngine={installedTranslationModels.length > 0 && translationAvailable}
+            capturing={isCapturingShortcut && capturingField === "quickTranslateShortcut"}
+            onChange={handleChange}
+            onCaptureShortcut={() => beginShortcutCapture("quickTranslateShortcut")}
+            onCancelCapture={cancelShortcutCapture}
+            feedback={fieldFeedback}
+          />
         </div>
       </section>
       <section

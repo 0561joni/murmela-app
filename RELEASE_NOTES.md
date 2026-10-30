@@ -1,5 +1,14 @@
 # Release notes
 
+## Murmela 1.3.0: translate what you select, anywhere
+
+- Translate selected text in any app: press ⌘C twice and the translation appears in a small window by the pointer, while the app you are in stays in front. Copy it, edit it in Murmela, or replace the selection with it. Pause or turn off ⌘C twice from that window or in Settings → Languages.
+- The Translate screen can put a translation straight back into the app you came from with Insert into… (⌘⇧↵), and starts with text you have just copied elsewhere.
+- Pro: click a word in the small window's translation to choose another one, with Undo.
+- VibeVoice: long recordings no longer fail with "The engine got stuck repeating itself". When the engine gets stuck, Murmela carries on after the last finished sentence instead of starting over, and a stuck moment no longer costs the whole recording.
+- VibeVoice: noise, music and other sounds are no longer listed as lines without a speaker, and no longer mark transcripts as needing review or speaker labels as failed. Speech it could not make out appears once per passage as "[Unclear audio 12:10–12:31]".
+- Calls: the other person, faintly heard through your microphone, is no longer listed under your name.
+
 ## Murmela 1.2.4: updates without admin rights
 
 - Updates install without an administrator password, also on Mac accounts without admin rights, as is common on company Macs. If Murmela still can't update itself where it is, it offers to install the new version in your own Applications folder.

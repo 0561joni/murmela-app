@@ -608,6 +608,62 @@ fn create_whisper_context(model: &InstalledModel, use_gpu: bool) -> Result<Whisp
         .with_context(|| format!("failed to load model {}", model.model_name))
 }
 
+/// Whisper for the short stretches another engine could not transcribe (where
+/// VibeVoice kept looping). The smallest installed Whisper model that is
+/// still accurate is used: Large v3 Turbo when it is there.
+pub(crate) struct WhisperFallback {
+    model: InstalledModel,
+    context: WhisperContext,
+    vad_model_path: Option<PathBuf>,
+}
+
+impl WhisperFallback {
+    pub(crate) fn load(models_dir: &Path, prefer_gpu: bool) -> Result<Self> {
+        let models = discover_whisper_models(models_dir)?;
+        let model = models
+            .iter()
+            .find(|model| model.model_name.contains("turbo"))
+            .or_else(|| models.iter().find(|model| model.is_default))
+            .or_else(|| models.first())
+            .cloned()
+            .ok_or_else(|| anyhow!("MODEL_MISSING: no Whisper model is installed"))?;
+        let context = if prefer_gpu {
+            create_whisper_context(&model, true).or_else(|_| create_whisper_context(&model, false))?
+        } else {
+            create_whisper_context(&model, false)?
+        };
+        Ok(Self {
+            model,
+            context,
+            vad_model_path: crate::model_downloads::installed_vad_model_path(models_dir),
+        })
+    }
+
+    /// The segments heard in `audio`, times relative to its start; none when
+    /// Whisper hears no speech.
+    pub(crate) fn transcribe(
+        &self,
+        audio: &audio_preprocess::PreparedAudio,
+        request: &FileTranscriptionRequest,
+    ) -> Result<Vec<TranscriptSegment>> {
+        let mut request = request.clone();
+        request.selected_model_id = Some(self.model.id.clone());
+        request.timestamps = true;
+        match run_whisper(
+            &self.context,
+            &self.model,
+            audio,
+            &request,
+            &None,
+            self.vad_model_path.as_deref(),
+        ) {
+            Ok(result) => Ok(result.segments),
+            Err(error) if error.to_string().starts_with("TRANSCRIPTION_EMPTY") => Ok(Vec::new()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DecodeOptions {
     temperature: f32,

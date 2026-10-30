@@ -188,7 +188,7 @@ pub fn assemble(input: AssembleInput) -> TranscriptResult {
         warnings.extend(remote.warnings);
         remote_segments = remote.segments;
     }
-    let local_segments = drop_echo(local_segments, &remote_segments);
+    let local_segments = drop_bleed(drop_echo(local_segments, &remote_segments), &remote_segments);
     let (spans, inferred_self) = split_self_spans(input.spans, &local_segments, &remote_segments);
 
     let mut speakers: Vec<TranscriptSpeaker> = Vec::new();
@@ -257,6 +257,20 @@ pub fn assemble(input: AssembleInput) -> TranscriptResult {
     let uncertain = segments
         .iter()
         .any(|segment| !matches!(segment.speaker_attribution, SpeakerAttribution::Assigned));
+    // Each channel listed its own unclear stretches; list the ones left once.
+    let covered: Vec<(i64, i64)> = warnings
+        .iter()
+        .filter(|warning| !crate::native_sounds::is_unclear_warning(warning))
+        .map(|warning| (warning.start_ms, warning.end_ms))
+        .collect();
+    warnings.retain(|warning| !crate::native_sounds::is_unclear_warning(warning));
+    let unclear: Vec<(i64, i64)> = segments
+        .iter()
+        .filter(|segment| crate::native_sounds::is_unclear_mark(&segment.text))
+        .map(|segment| (segment.start_ms, segment.end_ms))
+        .filter(|&(start, end)| !covered.iter().any(|&(from, to)| start >= from && end <= to))
+        .collect();
+    warnings.extend(crate::native_sounds::unclear_warning(&unclear));
     let mut result = crate::asr::build_transcript_result_named(
         input.job_id,
         &input.model_name,
@@ -549,6 +563,31 @@ pub fn name_clusters(
 
 /// Drops microphone passages that only repeat the call's sound, as happens when
 /// the call plays through loudspeakers instead of headphones.
+/// Unclear speech on the microphone while the other side is talking is the
+/// other side heard through the microphone, not this Mac's user.
+pub fn drop_bleed(
+    local: Vec<TranscriptSegment>,
+    remote: &[TranscriptSegment],
+) -> Vec<TranscriptSegment> {
+    local
+        .into_iter()
+        .filter(|segment| {
+            if !crate::native_sounds::is_unclear_mark(&segment.text) {
+                return true;
+            }
+            let length = (segment.end_ms - segment.start_ms).max(1);
+            let talking: i64 = remote
+                .iter()
+                .filter(|other| !crate::native_sounds::is_unclear_mark(&other.text))
+                .map(|other| {
+                    (other.end_ms.min(segment.end_ms) - other.start_ms.max(segment.start_ms)).max(0)
+                })
+                .sum();
+            talking * 2 < length
+        })
+        .collect()
+}
+
 pub fn drop_echo(
     local: Vec<TranscriptSegment>,
     remote: &[TranscriptSegment],
@@ -778,6 +817,38 @@ mod tests {
                 (speaker, segment.text.clone())
             })
             .collect()
+    }
+
+    #[test]
+    fn unclear_speech_on_the_microphone_while_the_other_side_talks_is_dropped() {
+        let mut local = channel(vec![
+            segment(0, 2_000, "Hello, thanks for joining."),
+            // The other side, heard faintly through the microphone.
+            segment(2_000, 9_000, "[Unclear audio 00:02–00:09]"),
+            // Something unclear while nobody else talked stays.
+            segment(20_000, 60_000, "[Unclear audio 00:20–01:00]"),
+        ])
+        .unwrap();
+        local.warnings = crate::native_sounds::unclear_warning(&[(2_000, 9_000), (20_000, 60_000)])
+            .into_iter()
+            .collect();
+        let mut result_input = input(vec![], vec![segment(2_500, 8_500, "Happy to be here today.")]);
+        result_input.local = Some(local);
+        let result = assemble(result_input);
+        assert_eq!(
+            names(&result),
+            vec![
+                ("You".to_string(), "Hello, thanks for joining.".to_string()),
+                ("Other side".to_string(), "Happy to be here today.".to_string()),
+                ("You".to_string(), "[Unclear audio 00:20–01:00]".to_string()),
+            ]
+        );
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(
+            result.warnings[0].reason,
+            "Unclear speech in one place (00:20). Listen there to fill it in."
+        );
+        assert_eq!(result.quality_status, TranscriptQualityStatus::Partial);
     }
 
     #[test]

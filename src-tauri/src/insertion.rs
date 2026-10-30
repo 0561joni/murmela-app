@@ -16,6 +16,7 @@ use clipboard_restore::ClipboardSnapshot;
 
 const KCG_HID_EVENT_TAP: u32 = 0;
 const KCG_EVENT_FLAG_MASK_COMMAND: u64 = 1 << 20;
+const MACOS_KEYCODE_C: u16 = 0x08;
 const MACOS_KEYCODE_V: u16 = 0x09;
 
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -130,6 +131,7 @@ pub fn insert_text(
     let clipboard_snapshot = can_paste.then(ClipboardSnapshot::capture);
 
     check_active()?;
+    crate::quick_translate::note_own_clipboard_write();
     app.clipboard().write_text(text.to_string())?;
     let dictated_clipboard_change_count = clipboard_restore::change_count();
 
@@ -197,6 +199,7 @@ fn restore_clipboard_after_paste(
 
     // The change-count guard protects content copied by the user (or another
     // app) while the paste was in flight.
+    crate::quick_translate::note_own_clipboard_write();
     if let Err(error) = snapshot.restore_if_unchanged(dictated_clipboard_change_count) {
         eprintln!("failed to restore clipboard after auto-paste: {error:#}");
     }
@@ -291,13 +294,46 @@ fn refocus_paste_target(paste_target: Option<&PasteTarget>) -> Result<()> {
 }
 
 fn simulate_paste() -> Result<()> {
+    simulate_command_key(MACOS_KEYCODE_V)
+}
+
+/// Copies the selection in the app in front with ⌘C and returns it as text,
+/// then puts back what the clipboard held before. None when nothing was copied
+/// (no selection, or the app ignored ⌘C). Needs Accessibility.
+pub fn copy_selection() -> Result<Option<String>> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    let snapshot = ClipboardSnapshot::capture();
+    let before = clipboard_restore::change_count();
+    crate::quick_translate::note_own_clipboard_write();
+    simulate_command_key(MACOS_KEYCODE_C)?;
+    let started = std::time::Instant::now();
+    while clipboard_restore::change_count() == before {
+        if started.elapsed() > Duration::from_millis(500) {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(15));
+    }
+    // Some apps clear the clipboard first and write the text a moment later.
+    thread::sleep(Duration::from_millis(40));
+    let copied = clipboard_restore::change_count();
+    let text = NSPasteboard::generalPasteboard()
+        .stringForType(unsafe { NSPasteboardTypeString })
+        .map(|text| text.to_string());
+    crate::quick_translate::note_own_clipboard_write();
+    if let Err(error) = snapshot.restore_if_unchanged(copied) {
+        eprintln!("failed to restore clipboard after copying the selection: {error:#}");
+    }
+    Ok(text.filter(|text| !text.trim().is_empty()))
+}
+
+fn simulate_command_key(key: u16) -> Result<()> {
     unsafe {
         if !AXIsProcessTrusted() {
             return Err(anyhow!(InsertionWarning::AccessibilityRequired.message()));
         }
 
-        let key_down = CGEventCreateKeyboardEvent(std::ptr::null(), MACOS_KEYCODE_V, true);
-        let key_up = CGEventCreateKeyboardEvent(std::ptr::null(), MACOS_KEYCODE_V, false);
+        let key_down = CGEventCreateKeyboardEvent(std::ptr::null(), key, true);
+        let key_up = CGEventCreateKeyboardEvent(std::ptr::null(), key, false);
 
         if key_down.is_null() || key_up.is_null() {
             if !key_down.is_null() {
@@ -330,12 +366,31 @@ fn simulate_paste() -> Result<()> {
 /// instead made macOS ask to let Murmela "control System Events" on the first
 /// dictation.
 pub fn detect_frontmost_paste_target() -> Option<PasteTarget> {
-    let (pid, bundle_id) = frontmost_application()?;
-    paste_target_from(pid, &bundle_id, std::process::id())
+    let front = frontmost_app()?;
+    paste_target_from(front.pid, &front.bundle_id, std::process::id())
 }
 
-/// The frontmost app's process id and bundle identifier ("" when it has none).
-fn frontmost_application() -> Option<(i32, String)> {
+/// The app in front, read from NSWorkspace (no permission needed).
+#[derive(Debug, Clone)]
+pub struct FrontmostApp {
+    pub pid: i32,
+    /// "" when the app has none (a development build, a script).
+    pub bundle_id: String,
+    pub name: Option<String>,
+}
+
+impl FrontmostApp {
+    pub fn is_murmela(&self) -> bool {
+        u32::try_from(self.pid).ok() == Some(std::process::id())
+    }
+
+    /// Where a paste goes back to; None for Murmela itself.
+    pub fn paste_target(&self) -> Option<PasteTarget> {
+        paste_target_from(self.pid, &self.bundle_id, std::process::id())
+    }
+}
+
+pub fn frontmost_app() -> Option<FrontmostApp> {
     use objc2::msg_send;
     use objc2::rc::autoreleasepool;
     use objc2::runtime::{AnyClass, AnyObject};
@@ -347,7 +402,12 @@ fn frontmost_application() -> Option<(i32, String)> {
         let app = app.as_ref()?;
         let pid: i32 = msg_send![app, processIdentifier];
         let bundle_id: *mut NSString = msg_send![app, bundleIdentifier];
-        Some((pid, bundle_id.as_ref().map(|id| id.to_string()).unwrap_or_default()))
+        let name: *mut NSString = msg_send![app, localizedName];
+        Some(FrontmostApp {
+            pid,
+            bundle_id: bundle_id.as_ref().map(|id| id.to_string()).unwrap_or_default(),
+            name: name.as_ref().map(|name| name.to_string()),
+        })
     })
 }
 
@@ -374,8 +434,8 @@ mod tests {
     fn reads_the_frontmost_app_without_system_events() {
         // Runs in the test process; NSWorkspace answers without any permission.
         // A headless run may have no frontmost app, which is fine.
-        if let Some((pid, _)) = frontmost_application() {
-            assert!(pid > 0);
+        if let Some(front) = frontmost_app() {
+            assert!(front.pid > 0);
         }
     }
 

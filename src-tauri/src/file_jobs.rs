@@ -903,6 +903,13 @@ impl FileTranscriptionController {
             "saving",
             &request.source_file.original_name,
         );
+        for warning in &corrected.warnings {
+            self.log_job(
+                &request.job_id,
+                "warning",
+                &format!("{} {}", warning.outcome, warning.reason),
+            );
+        }
 
         if let Some(model_id) =
             resolve_model_id_for_job(&self.db_path, PreviewSourceKind::FileUpload)

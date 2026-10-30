@@ -68,6 +68,7 @@ enum ShortcutRole {
     Dictation,
     CycleLanguage,
     PasteLast,
+    QuickTranslate,
 }
 impl ShortcutRole {
     fn label(self) -> &'static str {
@@ -75,6 +76,7 @@ impl ShortcutRole {
             Self::Dictation => "Dictation",
             Self::CycleLanguage => "language switching",
             Self::PasteLast => "pasting the last dictation",
+            Self::QuickTranslate => "translating selected text",
         }
     }
 }
@@ -502,6 +504,15 @@ impl QuickDictationController {
                                 });
                             }
                         }
+                        // On release, so the held modifiers do not reach the ⌘C.
+                        ShortcutRole::QuickTranslate => {
+                            if event.state() == ShortcutState::Released {
+                                let app = controller.app.clone();
+                                thread::spawn(move || {
+                                    crate::quick_translate::trigger_from_shortcut(&app)
+                                });
+                            }
+                        }
                         ShortcutRole::Dictation => {
                             if let Err(error) =
                                 controller.handle_shortcut_event(event.state(), event.id)
@@ -559,6 +570,9 @@ impl QuickDictationController {
         }
         if !settings.paste_last_shortcut.trim().is_empty() {
             entries.push((ShortcutRole::PasteLast, settings.paste_last_shortcut.as_str()));
+        }
+        if let Some(shortcut) = crate::quick_translate::registered_shortcut(&settings) {
+            entries.push((ShortcutRole::QuickTranslate, shortcut));
         }
         let next = shortcut_set(&entries)?;
         if *self

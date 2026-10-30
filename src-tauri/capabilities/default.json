@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default desktop capability set",
-  "windows": ["main", "splashscreen", "dictation-overlay"],
+  "windows": ["main", "splashscreen", "dictation-overlay", "quick-translate"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

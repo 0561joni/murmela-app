@@ -112,6 +112,18 @@ export interface AppSettings {
   pasteLastShortcut: string;
   seriousMode: boolean;
   autoUpdateEnabled: boolean;
+  /** Translate selected text in any app with ⌘C twice (or quickTranslateShortcut). */
+  quickTranslateEnabled: boolean;
+  /** "DoubleCopy", or a key combination that copies the selection itself. */
+  quickTranslateShortcut: string;
+  quickTranslateDisplay: "popup" | "app";
+  /** Bundle identifiers of apps where ⌘C twice stays a normal copy. */
+  quickTranslateIgnoredApps: string[];
+  /** Other languages are translated into this one; null follows macOS. */
+  quickTranslateMyLanguage: string | null;
+  quickTranslateLastTarget: string | null;
+  /** Keep translations made in the ⌘C-twice panel in the Library. */
+  quickTranslateSaveHistory: boolean;
 }
 
 export type LivePairChunkMs = 560 | 1120;
@@ -154,6 +166,13 @@ export interface SettingsPatch {
   pasteLastShortcut?: string;
   seriousMode?: boolean;
   autoUpdateEnabled?: boolean;
+  quickTranslateEnabled?: boolean;
+  quickTranslateShortcut?: string;
+  quickTranslateDisplay?: AppSettings["quickTranslateDisplay"];
+  quickTranslateIgnoredApps?: string[];
+  quickTranslateMyLanguage?: string | null;
+  quickTranslateLastTarget?: string | null;
+  quickTranslateSaveHistory?: boolean;
 }
 
 export interface InstalledModel {

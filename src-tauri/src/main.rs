@@ -21,6 +21,7 @@ use murmela_lib::{
     model_metadata,
     network_activity,
     permissions,
+    quick_translate,
     review,
     review_jobs,
     review_media,
@@ -213,7 +214,9 @@ fn update_settings(
         || patch.shortcut_mode.is_some()
         || patch.translation_enabled.is_some()
         || patch.translation_cycle_shortcut.is_some()
-        || patch.paste_last_shortcut.is_some();
+        || patch.paste_last_shortcut.is_some()
+        || patch.quick_translate_enabled.is_some()
+        || patch.quick_translate_shortcut.is_some();
     if state.translation.snapshot().busy && (sync_shortcut || patch.translation_model_id.is_some())
     {
         return Err(
@@ -296,6 +299,13 @@ fn update_settings(
                 paste_last_shortcut: Some(previous.paste_last_shortcut.clone()),
                 serious_mode: Some(previous.serious_mode),
                 auto_update_enabled: Some(previous.auto_update_enabled),
+                quick_translate_enabled: Some(previous.quick_translate_enabled),
+                quick_translate_shortcut: Some(previous.quick_translate_shortcut.clone()),
+                quick_translate_display: Some(previous.quick_translate_display),
+                quick_translate_ignored_apps: Some(previous.quick_translate_ignored_apps.clone()),
+                quick_translate_my_language: Some(previous.quick_translate_my_language.clone()),
+                quick_translate_last_target: Some(previous.quick_translate_last_target.clone()),
+                quick_translate_save_history: Some(previous.quick_translate_save_history),
             },
         )
         .map_err(|rollback| format!("{error}; could not restore previous settings: {rollback}"))?;
@@ -307,6 +317,7 @@ fn update_settings(
         }
         return Err(error);
     }
+    quick_translate::configure(&settings);
     if translation_change == Some(false) || translation_model_change {
         state.translation.release_translation_model();
     }
@@ -1698,6 +1709,7 @@ fn main() {
                         app_state.dictation_controller.refresh_tray_recents();
                         if app_handle.manage(app_state) {
                             updates::start(&app_handle);
+                            quick_translate::start(&app_handle);
                             startup.advance(&app_handle, StartupPhase::Workspace);
                         } else {
                             startup.fail(&app_handle, "Application state was already initialized.");
@@ -1841,6 +1853,20 @@ fn main() {
             get_dictation_readiness,
             open_accessibility_settings,
             request_accessibility_access,
+            quick_translate::quick_translate_current,
+            quick_translate::quick_translate_close,
+            quick_translate::quick_translate_resize,
+            quick_translate::quick_translate_copy,
+            quick_translate::quick_translate_replace,
+            quick_translate::quick_translate_edit,
+            quick_translate::quick_translate_set_target,
+            quick_translate::quick_translate_pause,
+            quick_translate::quick_translate_system_language,
+            quick_translate::quick_translate_insert_target,
+            quick_translate::quick_translate_insert,
+            quick_translate::quick_translate_recent_copy,
+            quick_translate::quick_translate_describe_apps,
+            quick_translate::quick_translate_pick_app,
             get_update_status,
             check_for_updates,
             install_update_and_restart,

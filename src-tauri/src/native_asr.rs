@@ -14,7 +14,7 @@ use crate::diarization::{
 };
 use crate::speaker_reconciliation::SpeakerAttribution;
 use crate::transcription_progress::{set_step, Step};
-use crate::{audio_preprocess, model_metadata, native_chunks};
+use crate::{audio_preprocess, model_metadata, native_chunks, native_sounds};
 
 pub const WORKER_PROTOCOL_VERSION: u32 = 1;
 
@@ -55,6 +55,23 @@ pub struct NativeWorkerResult {
     pub truncated: bool,
     #[serde(default)]
     pub warning: Option<String>,
+    /// Stretches the worker left out because the model kept looping there.
+    #[serde(default)]
+    pub gaps: Vec<NativeGap>,
+}
+
+/// A stretch of audio a worker did not transcribe; times are relative to the
+/// audio the worker was given until the chunks are stitched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeGap {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    /// How the model got stuck there, e.g. "repeated a word".
+    pub reason: String,
+    /// The engine that transcribed the stretch instead.
+    #[serde(default)]
+    pub filled_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,19 +111,312 @@ pub fn transcribe_with_native_worker(
             progress.fetch_max(percent.clamp(0, 100), Ordering::Relaxed);
         }
     };
+    let log = EngineLog::new(models_dir);
+    let mut fallback = GapFallback::new(models_dir, request);
     let chunk_ms = native_chunks::chunk_length_ms(crate::memory_pressure::installed_bytes());
     let output = if model.id == model_metadata::VIBEVOICE_MODEL_ID && duration_ms > chunk_ms {
-        transcribe_in_chunks(model, request, &prepared, duration_ms, chunk_ms, models_dir, &report)?
+        transcribe_in_chunks(model, request, &prepared, duration_ms, chunk_ms, models_dir, &log, &mut fallback, &report)?
     } else {
-        run_worker_on(model, request, &prepared, &report)?
+        let mut output = run_worker_or_gap(model, request, &prepared, &log, &report)?;
+        if !output.gaps.is_empty() {
+            let embedder = crate::model_downloads::installed_diarization_package_path(models_dir)
+                .and_then(|package| native_chunks::VoiceEmbedder::load(&package));
+            let voices = embedder
+                .as_ref()
+                .map(|embedder| voices_of(embedder, &output.segments, &prepared))
+                .unwrap_or_default();
+            fallback.fill(&mut output, &prepared, &voices, embedder.as_ref(), &log)?;
+        }
+        output
     };
+    let mut output = output;
+    tidy_sounds(&mut output, &prepared, models_dir, &log);
     Ok(normalize_native_result(&model.id, &model.model_name, duration_ms, output))
+}
+
+/// Runs the worker; a worker that gives up on looping audio altogether (an
+/// older worker did) leaves the whole stretch as a gap instead of failing the
+/// recording.
+fn run_worker_or_gap(
+    model: &crate::asr::InstalledModel,
+    request: &crate::asr::FileTranscriptionRequest,
+    audio: &audio_preprocess::PreparedAudio,
+    log: &EngineLog,
+    report: &dyn Fn(i32),
+) -> anyhow::Result<NativeWorkerResult> {
+    match run_worker_on(model, request, audio, log, report) {
+        Err(error) if error.to_string().starts_with("DECODER_REPETITION") => {
+            log.line(&format!("{} gave up on a piece: {error}", model.model_name));
+            let end_ms = audio.samples.len() as i64 * 1_000 / audio.sample_rate_hz.max(1) as i64;
+            Ok(NativeWorkerResult {
+                text: String::new(),
+                segments: Vec::new(),
+                truncated: false,
+                warning: None,
+                gaps: vec![NativeGap {
+                    start_ms: 0,
+                    end_ms,
+                    reason: "repeated itself".to_string(),
+                    filled_by: None,
+                }],
+            })
+        }
+        result => result,
+    }
+}
+
+/// A voice embedding for every speaker label in `segments` (times relative
+/// to `audio`).
+fn voices_of(
+    embedder: &native_chunks::VoiceEmbedder,
+    segments: &[NativeOutputSegment],
+    audio: &audio_preprocess::PreparedAudio,
+) -> native_chunks::ChunkVoices {
+    let segments: Vec<NativeOutputSegment> = segments
+        .iter()
+        .map(|segment| NativeOutputSegment {
+            speaker: segment.speaker.as_deref().map(str::trim).map(str::to_string),
+            ..segment.clone()
+        })
+        .collect();
+    let mut labels: Vec<String> = segments.iter().filter_map(|s| s.speaker.clone()).collect();
+    labels.sort();
+    labels.dedup();
+    labels
+        .into_iter()
+        .filter_map(|label| {
+            let ranges = native_chunks::voice_sample_ranges(&segments, &label);
+            let voice = embedder.embed(&audio.samples, audio.sample_rate_hz, &ranges)?;
+            Some((label, voice))
+        })
+        .collect()
+}
+
+/// Fills the gaps a worker left with Whisper, loaded only when a gap comes up.
+struct GapFallback<'a> {
+    models_dir: &'a Path,
+    request: &'a crate::asr::FileTranscriptionRequest,
+    whisper: Option<Result<crate::asr::WhisperFallback, String>>,
+}
+
+impl<'a> GapFallback<'a> {
+    fn new(models_dir: &'a Path, request: &'a crate::asr::FileTranscriptionRequest) -> Self {
+        Self { models_dir, request, whisper: None }
+    }
+
+    /// Transcribes `output`'s gaps (times relative to `audio`) and puts the
+    /// text in place. Each filled stretch goes to the speaker whose voice it
+    /// matches, if any; a stretch Whisper cannot transcribe either is marked
+    /// as unclear, as Whisper marks its own.
+    fn fill(
+        &mut self,
+        output: &mut NativeWorkerResult,
+        audio: &audio_preprocess::PreparedAudio,
+        voices: &native_chunks::ChunkVoices,
+        embedder: Option<&native_chunks::VoiceEmbedder>,
+        log: &EngineLog,
+    ) -> anyhow::Result<()> {
+        let rate = audio.sample_rate_hz as i64;
+        for gap in &mut output.gaps {
+            crate::shutdown::ensure_running()?;
+            let from = ((gap.start_ms * rate / 1_000) as usize).min(audio.samples.len());
+            let to = ((gap.end_ms * rate / 1_000) as usize).min(audio.samples.len());
+            let piece = audio_preprocess::PreparedAudio {
+                sample_rate_hz: audio.sample_rate_hz,
+                channels: audio.channels,
+                samples: audio.samples[from..to].to_vec(),
+            };
+            let request = self.request;
+            let heard = self.whisper().and_then(|whisper| whisper.transcribe(&piece, request));
+            crate::shutdown::ensure_running()?;
+            let segments = match heard {
+                Ok(segments) if !segments.is_empty() => segments,
+                Ok(_) => {
+                    log.line(&format!("Whisper heard no speech in {}–{} ms", gap.start_ms, gap.end_ms));
+                    output.segments.push(unclear_segment(gap));
+                    continue;
+                }
+                Err(error) => {
+                    log.line(&format!("Whisper could not fill {}–{} ms: {error}", gap.start_ms, gap.end_ms));
+                    output.segments.push(unclear_segment(gap));
+                    continue;
+                }
+            };
+            let speaker = embedder.and_then(|embedder| matching_voice(embedder, &piece, voices));
+            log.line(&format!(
+                "Whisper filled {}–{} ms with {} segments, speaker {}",
+                gap.start_ms,
+                gap.end_ms,
+                segments.len(),
+                speaker.as_deref().unwrap_or("unknown")
+            ));
+            for segment in segments {
+                let start_ms = (gap.start_ms + segment.start_ms).clamp(gap.start_ms, gap.end_ms);
+                output.segments.push(NativeOutputSegment {
+                    start_ms,
+                    end_ms: (gap.start_ms + segment.end_ms).clamp(start_ms, gap.end_ms),
+                    text: segment.text,
+                    speaker: speaker.clone(),
+                    language_code: Some(segment.language_code).filter(|code| code != "und"),
+                });
+            }
+            gap.filled_by = Some("Whisper".to_string());
+        }
+        output.segments.sort_by_key(|segment| (segment.start_ms, segment.end_ms));
+        Ok(())
+    }
+}
+
+impl GapFallback<'_> {
+    fn whisper(&mut self) -> anyhow::Result<&crate::asr::WhisperFallback> {
+        let models_dir = self.models_dir;
+        let prefer_gpu = self.request.prefer_gpu;
+        let whisper = self.whisper.get_or_insert_with(|| {
+            crate::asr::WhisperFallback::load(models_dir, prefer_gpu).map_err(|error| error.to_string())
+        });
+        whisper.as_ref().map_err(|error| anyhow::anyhow!("{error}"))
+    }
+}
+
+/// The speaker label whose voice `piece` matches, if any.
+fn matching_voice(
+    embedder: &native_chunks::VoiceEmbedder,
+    piece: &audio_preprocess::PreparedAudio,
+    voices: &native_chunks::ChunkVoices,
+) -> Option<String> {
+    let length_ms = piece.samples.len() as i64 * 1_000 / piece.sample_rate_hz.max(1) as i64;
+    let voice = embedder.embed(&piece.samples, piece.sample_rate_hz, &[(0, length_ms)])?;
+    voices
+        .iter()
+        .map(|(label, known)| (label, native_chunks::cosine(&voice, known)))
+        .filter(|(_, similarity)| *similarity >= native_chunks::SAME_VOICE_SIMILARITY)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(label, _)| label.clone())
+}
+
+fn unclear_segment(gap: &NativeGap) -> NativeOutputSegment {
+    NativeOutputSegment {
+        start_ms: gap.start_ms,
+        end_ms: gap.end_ms,
+        text: native_sounds::unclear_text(gap.start_ms, gap.end_ms),
+        speaker: None,
+        language_code: None,
+    }
+}
+
+/// Unclear stretches closer than this, with no words between, are one.
+const UNCLEAR_JOIN_MS: i64 = 1_500;
+/// Shorter unclear blips (a cough of a word) are dropped, not marked.
+const MIN_UNCLEAR_MS: i64 = 1_500;
+
+/// Drops sound tags and marks each stretch of tagged unclear speech once,
+/// with the speaker whose voice it matches; see `native_sounds`. Whisper is
+/// not asked to fill these in: on a real call it wrote a confident, wrong
+/// sentence for every one (see `unclear_speech_is_left_to_the_listener`).
+/// Segment times are relative to `audio`.
+fn tidy_sounds(output: &mut NativeWorkerResult, audio: &audio_preprocess::PreparedAudio, models_dir: &Path, log: &EngineLog) {
+    struct Stretch {
+        start_ms: i64,
+        end_ms: i64,
+        speaker: Option<String>,
+        /// Kept segments before it: nothing was said between joined stretches.
+        after: usize,
+    }
+    let mut kept = Vec::with_capacity(output.segments.len());
+    let mut stretches: Vec<Stretch> = Vec::new();
+    let mut sounds = 0;
+    for segment in std::mem::take(&mut output.segments) {
+        if native_sounds::is_unclear_mark(&segment.text) {
+            kept.push(segment);
+            continue;
+        }
+        match native_sounds::kind(&segment.text) {
+            native_sounds::Kind::Speech => kept.push(segment),
+            native_sounds::Kind::Sound => sounds += 1,
+            native_sounds::Kind::Unclear => {
+                let speaker = segment.speaker.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+                match stretches.last_mut() {
+                    Some(last)
+                        if last.after == kept.len()
+                            && segment.start_ms <= last.end_ms + UNCLEAR_JOIN_MS
+                            && (speaker.is_none() || last.speaker.is_none() || speaker == last.speaker) =>
+                    {
+                        last.end_ms = last.end_ms.max(segment.end_ms);
+                        last.speaker = last.speaker.take().or(speaker);
+                    }
+                    _ => stretches.push(Stretch {
+                        start_ms: segment.start_ms,
+                        end_ms: segment.end_ms,
+                        speaker,
+                        after: kept.len(),
+                    }),
+                }
+            }
+        }
+    }
+    stretches.retain(|stretch| stretch.end_ms - stretch.start_ms >= MIN_UNCLEAR_MS);
+    if !stretches.is_empty() {
+        let embedder = crate::model_downloads::installed_diarization_package_path(models_dir)
+            .and_then(|package| native_chunks::VoiceEmbedder::load(&package));
+        let voices = embedder
+            .as_ref()
+            .map(|embedder| voices_of(embedder, &kept, audio))
+            .unwrap_or_default();
+        let rate = audio.sample_rate_hz as i64;
+        for stretch in &stretches {
+            let speaker = stretch.speaker.clone().or_else(|| {
+                let from = ((stretch.start_ms * rate / 1_000) as usize).min(audio.samples.len());
+                let to = ((stretch.end_ms * rate / 1_000) as usize).min(audio.samples.len());
+                let piece = audio_preprocess::PreparedAudio {
+                    sample_rate_hz: audio.sample_rate_hz,
+                    channels: audio.channels,
+                    samples: audio.samples[from..to].to_vec(),
+                };
+                embedder.as_ref().and_then(|embedder| matching_voice(embedder, &piece, &voices))
+            });
+            kept.push(NativeOutputSegment {
+                start_ms: stretch.start_ms,
+                end_ms: stretch.end_ms,
+                text: native_sounds::unclear_text(stretch.start_ms, stretch.end_ms),
+                speaker,
+                language_code: None,
+            });
+        }
+        kept.sort_by_key(|segment| (segment.start_ms, segment.end_ms));
+    }
+    output.segments = kept;
+    if sounds > 0 || !stretches.is_empty() {
+        log.line(&format!("dropped {sounds} sound tags; marked {} unclear stretches", stretches.len()));
+    }
+}
+
+/// Engine diagnostics (where a model looped, what filled a gap) for the file
+/// transcription log the app writes its job events to. The engine runs in its
+/// own process, so it appends to the file directly.
+#[derive(Clone)]
+pub(crate) struct EngineLog(Option<PathBuf>);
+
+impl EngineLog {
+    pub(crate) fn new(models_dir: &Path) -> Self {
+        Self(models_dir.parent().map(|dir| dir.join("file-transcription.log")))
+    }
+
+    pub(crate) fn line(&self, message: &str) {
+        let line = format!("[{}] engine {}\n", chrono::Utc::now().timestamp_millis(), message);
+        eprintln!("{}", line.trim_end());
+        if let Some(path) = &self.0 {
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = file.write_all(line.as_bytes());
+            }
+        }
+    }
 }
 
 fn run_worker_on(
     model: &crate::asr::InstalledModel,
     request: &crate::asr::FileTranscriptionRequest,
     audio: &audio_preprocess::PreparedAudio,
+    log: &EngineLog,
     report: &dyn Fn(i32),
 ) -> anyhow::Result<NativeWorkerResult> {
     // Always hand the worker the audio Murmela already decoded. The Python
@@ -115,7 +425,7 @@ fn run_worker_on(
     let path = std::env::temp_dir().join(format!("murmela-worker-{}.wav", Uuid::new_v4()));
     let temporary_wav = TemporaryAudio(path.clone());
     audio_preprocess::write_wav(&path, audio)?;
-    let result = run_worker_process(model, request, &path, report);
+    let result = run_worker_process(model, request, &path, log, report);
     drop(temporary_wav);
     result
 }
@@ -130,6 +440,8 @@ fn transcribe_in_chunks(
     duration_ms: i64,
     chunk_ms: i64,
     models_dir: &Path,
+    log: &EngineLog,
+    fallback: &mut GapFallback,
     report: &dyn Fn(i32),
 ) -> anyhow::Result<NativeWorkerResult> {
     let rate = prepared.sample_rate_hz;
@@ -148,7 +460,8 @@ fn transcribe_in_chunks(
         };
         let base = index as i32 * 100 / count;
         let share = (index as i32 + 1) * 100 / count - base;
-        let result = run_worker_on(model, request, &audio, &|percent| report(base + percent * share / 100))?;
+        log.line(&format!("piece {}/{count}: {}–{} ms", index + 1, span.start_ms, span.end_ms));
+        let result = run_worker_or_gap(model, request, &audio, log, &|percent| report(base + percent * share / 100))?;
         transcripts.push(native_chunks::ChunkTranscript { span: *span, result });
     }
 
@@ -166,34 +479,38 @@ fn transcribe_in_chunks(
                     .map(|segment| NativeOutputSegment {
                         start_ms: chunk.span.start_ms + segment.start_ms,
                         end_ms: chunk.span.start_ms + segment.end_ms,
-                        speaker: segment.speaker.as_deref().map(str::trim).map(str::to_string),
                         ..segment.clone()
                     })
                     .collect();
-                let mut labels: Vec<String> = segments.iter().filter_map(|s| s.speaker.clone()).collect();
-                labels.sort();
-                labels.dedup();
-                labels
-                    .into_iter()
-                    .filter_map(|label| {
-                        let ranges = native_chunks::voice_sample_ranges(&segments, &label);
-                        let voice = embedder.embed(&prepared.samples, rate, &ranges)?;
-                        Some((label, voice))
-                    })
-                    .collect()
+                voices_of(embedder, &segments, prepared)
             })
             .collect(),
         None => Vec::new(),
     };
+    for (index, chunk) in transcripts.iter_mut().enumerate() {
+        if chunk.result.gaps.is_empty() {
+            continue;
+        }
+        let from = (chunk.span.start_ms * rate as i64 / 1_000) as usize;
+        let to = ((chunk.span.end_ms * rate as i64 / 1_000) as usize).min(prepared.samples.len());
+        let audio = audio_preprocess::PreparedAudio {
+            sample_rate_hz: rate,
+            channels: prepared.channels,
+            samples: prepared.samples[from..to].to_vec(),
+        };
+        let empty = native_chunks::ChunkVoices::new();
+        let chunk_voices = voices.get(index).unwrap_or(&empty);
+        fallback.fill(&mut chunk.result, &audio, chunk_voices, embedder.as_ref(), log)?;
+    }
     let (result, stitched) = native_chunks::stitch(transcripts, &voices);
-    eprintln!(
+    log.line(&format!(
         "{} chunks of up to {} min; {} speakers; voices {}; matches {:?}",
         count,
         chunk_ms / 60_000,
         stitched.speakers,
         if embedder.is_some() { "used" } else { "unavailable" },
         stitched.matches
-    );
+    ));
     report(100);
     Ok(result)
 }
@@ -210,6 +527,7 @@ fn run_worker_process(
     model: &crate::asr::InstalledModel,
     request: &crate::asr::FileTranscriptionRequest,
     audio_path: &Path,
+    log: &EngineLog,
     report: &dyn Fn(i32),
 ) -> anyhow::Result<NativeWorkerResult> {
     let worker = resolve_worker(&model.id).ok_or_else(|| {
@@ -275,8 +593,13 @@ fn run_worker_process(
     let stderr_tail = Arc::new(Mutex::new(Vec::<String>::new()));
     if let Some(stderr) = child.stderr.take() {
         let tail = stderr_tail.clone();
+        let log = log.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                // The worker's own diagnostics, such as where the model looped.
+                if let Some(note) = line.strip_prefix("murmela: ") {
+                    log.line(note);
+                }
                 if let Ok(mut tail) = tail.lock() {
                     if tail.len() == STDERR_TAIL_LINES {
                         tail.remove(0);
@@ -539,6 +862,9 @@ pub fn normalize_native_result(
     let mut turns = Vec::<DiarizationTurn>::new();
     let mut segments = Vec::<TranscriptSegment>::new();
     let mut incomplete = false;
+    let in_gap = |start_ms: i64, end_ms: i64| {
+        output.gaps.iter().any(|gap| start_ms >= gap.start_ms && end_ms <= gap.end_ms)
+    };
 
     for raw in output.segments {
         let start_ms = raw.start_ms.clamp(0, duration);
@@ -569,7 +895,9 @@ pub fn normalize_native_result(
                     .clone()
             });
         let has_speaker = normalized_speaker.is_some();
-        if !has_speaker {
+        // Text another engine filled in, or an unclear-audio mark, may have no
+        // speaker; that does not make the model's own speakers incomplete.
+        if !has_speaker && !in_gap(raw.start_ms, raw.end_ms) && !native_sounds::is_unclear_mark(&text) {
             incomplete = true;
         }
         let order = segments.len() as i32;
@@ -663,7 +991,49 @@ pub fn normalize_native_result(
             outcome: "partially_recovered".to_string(),
         });
     }
-    let partial = incomplete || output.truncated;
+    let mut recovered = 0;
+    let mut skipped = false;
+    for gap in &output.gaps {
+        let place = format!(
+            "{}–{}",
+            crate::output_format::clock_ms(gap.start_ms),
+            crate::output_format::clock_ms(gap.end_ms)
+        );
+        let (reason, outcome) = match &gap.filled_by {
+            Some(engine) => {
+                recovered += 1;
+                (
+                    format!("{model_name} got stuck at {place} ({}); {engine} transcribed this part.", gap.reason),
+                    "recovered",
+                )
+            }
+            None => {
+                skipped = true;
+                (
+                    format!("{model_name} got stuck at {place} ({}); this part could not be transcribed.", gap.reason),
+                    "skipped",
+                )
+            }
+        };
+        warnings.push(TranscriptWarning {
+            start_ms: gap.start_ms,
+            end_ms: gap.end_ms,
+            reason,
+            attempts: 3,
+            outcome: outcome.to_string(),
+        });
+    }
+    let unclear: Vec<(i64, i64)> = segments
+        .iter()
+        .filter(|segment| native_sounds::is_unclear_mark(&segment.text))
+        .map(|segment| (segment.start_ms, segment.end_ms))
+        .filter(|&(start_ms, end_ms)| !in_gap(start_ms, end_ms))
+        .collect();
+    if let Some(warning) = native_sounds::unclear_warning(&unclear) {
+        skipped = true;
+        warnings.push(warning);
+    }
+    let partial = incomplete || output.truncated || skipped;
 
     TranscriptResult {
         job_id: Uuid::new_v4().to_string(),
@@ -673,8 +1043,14 @@ pub fn normalize_native_result(
         timestamped_text,
         detected_languages,
         segments,
-        quality_status: if partial { TranscriptQualityStatus::Partial } else { TranscriptQualityStatus::Clean },
-        recovered_region_count: 0,
+        quality_status: if partial {
+            TranscriptQualityStatus::Partial
+        } else if recovered > 0 {
+            TranscriptQualityStatus::Recovered
+        } else {
+            TranscriptQualityStatus::Clean
+        },
+        recovered_region_count: recovered,
         warnings,
         diarization_status: if incomplete { DiarizationStatus::Failed } else { DiarizationStatus::Completed },
         diarization_model_id: Some(model_id.to_string()),
@@ -693,6 +1069,7 @@ mod tests {
     /// Transcribes a real long recording with the installed VibeVoice model:
     /// `MURMELA_LONG_FILE=/path/to/audio.m4a cargo test --release --lib long_recording -- --ignored --nocapture`.
     /// Writes the transcript to `MURMELA_LONG_OUT` (default: the temp folder).
+    /// `MURMELA_LONG_DICTIONARY=1` passes the app's dictionary as the app does.
     #[test]
     #[ignore]
     fn long_recording_is_transcribed_in_chunks() {
@@ -703,6 +1080,9 @@ mod tests {
             .into_iter()
             .find(|model| model.id == super::model_metadata::VIBEVOICE_MODEL_ID)
             .expect("VibeVoice is not installed");
+        let dictionary = std::env::var_os("MURMELA_LONG_DICTIONARY").and_then(|_| {
+            crate::vocabulary::build_asr_prompt_from_db_path(&models_dir.parent().unwrap().join("speech_to_text.sqlite")).unwrap()
+        });
         let request = crate::asr::FileTranscriptionRequest {
             use_context: None,
             profile: crate::settings::ModelProfile::Accurate,
@@ -712,8 +1092,8 @@ mod tests {
             timestamps: true,
             prefer_gpu: true,
             file_path: file.clone(),
-            context_prompt: None,
-            context_terms: Vec::new(),
+            context_prompt: dictionary.as_ref().map(|prompt| prompt.text.clone()),
+            context_terms: dictionary.map(|prompt| prompt.terms).unwrap_or_default(),
         };
         let started = std::time::Instant::now();
         let result = super::transcribe_with_native_worker(&model, &request, None, &models_dir).unwrap();
@@ -721,6 +1101,187 @@ mod tests {
         let out = std::env::var("MURMELA_LONG_OUT")
             .unwrap_or_else(|_| std::env::temp_dir().join("murmela-long.json").display().to_string());
         std::fs::write(out, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    }
+
+    /// Fills a stretch of a real recording with the installed Whisper model:
+    /// `MURMELA_GAP_AUDIO=/path/to/audio.wav cargo test --release --lib gap_is_filled -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn gap_is_filled_by_whisper_on_a_real_recording() {
+        let file = std::env::var("MURMELA_GAP_AUDIO").expect("set MURMELA_GAP_AUDIO");
+        let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Library/Application Support/com.murmela.app/models");
+        let audio = crate::audio_preprocess::decode_audio_file(Path::new(&file)).unwrap();
+        let request = crate::asr::FileTranscriptionRequest {
+            use_context: Some(crate::model_metadata::ModelUseContext::FileTranscription),
+            profile: crate::settings::ModelProfile::Accurate,
+            selected_model_id: None,
+            language_mode: crate::settings::LanguageMode::Auto,
+            fixed_language: None,
+            timestamps: true,
+            prefer_gpu: true,
+            file_path: file.clone(),
+            context_prompt: None,
+            context_terms: Vec::new(),
+        };
+        let mut output = NativeWorkerResult {
+            text: String::new(),
+            segments: Vec::new(),
+            truncated: false,
+            warning: None,
+            gaps: vec![NativeGap { start_ms: 60_000, end_ms: 75_000, reason: "repeated a word".into(), filled_by: None }],
+        };
+        let log = EngineLog(None);
+        let started = std::time::Instant::now();
+        GapFallback::new(&models_dir, &request)
+            .fill(&mut output, &audio, &native_chunks::ChunkVoices::new(), None, &log)
+            .unwrap();
+        eprintln!("filled in {:?}: {:#?}", started.elapsed(), output.segments);
+        assert_eq!(output.gaps[0].filled_by.as_deref(), Some("Whisper"));
+        assert!(output.segments.iter().all(|segment| segment.start_ms >= 60_000 && segment.end_ms <= 75_000));
+    }
+
+    /// Why unclear speech is marked, not filled in: prints what Whisper makes of
+    /// a finished transcript's unclear stretches next to what a cleaner
+    /// recording of the same moments says (a call's other channel). On a
+    /// 58-minute call (2026-10-30) all 66 were confident inventions
+    /// ("Gracias." at 0.99 where a density meter was being explained).
+    /// `MURMELA_GAP_AUDIO=… MURMELA_REFERENCE_AUDIO=… MURMELA_UNCLEAR_TRANSCRIPT=…json cargo test --release --lib unclear_speech_is_left -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn unclear_speech_is_left_to_the_listener() {
+        let file = std::env::var("MURMELA_GAP_AUDIO").expect("set MURMELA_GAP_AUDIO");
+        let transcript: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(std::env::var("MURMELA_UNCLEAR_TRANSCRIPT").expect("set MURMELA_UNCLEAR_TRANSCRIPT")).unwrap(),
+        )
+        .unwrap();
+        let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Library/Application Support/com.murmela.app/models");
+        let audio = crate::audio_preprocess::decode_audio_file(Path::new(&file)).unwrap();
+        let request = crate::asr::FileTranscriptionRequest {
+            use_context: Some(crate::model_metadata::ModelUseContext::FileTranscription),
+            profile: crate::settings::ModelProfile::Accurate,
+            selected_model_id: None,
+            language_mode: crate::settings::LanguageMode::Auto,
+            fixed_language: None,
+            timestamps: true,
+            prefer_gpu: true,
+            file_path: file.clone(),
+            context_prompt: None,
+            context_terms: Vec::new(),
+        };
+        let whisper = crate::asr::WhisperFallback::load(&models_dir, true).unwrap();
+        let reference = std::env::var("MURMELA_REFERENCE_AUDIO")
+            .ok()
+            .map(|path| crate::audio_preprocess::decode_audio_file(Path::new(&path)).unwrap());
+        let rate = audio.sample_rate_hz as i64;
+        for segment in transcript["segments"].as_array().unwrap() {
+            if native_sounds::kind(segment["text"].as_str().unwrap()) != native_sounds::Kind::Unclear {
+                continue;
+            }
+            let (start, end) = (segment["startMs"].as_i64().unwrap(), segment["endMs"].as_i64().unwrap());
+            let piece = crate::audio_preprocess::PreparedAudio {
+                sample_rate_hz: audio.sample_rate_hz,
+                channels: audio.channels,
+                samples: audio.samples[(start * rate / 1_000) as usize..((end * rate / 1_000) as usize).min(audio.samples.len())].to_vec(),
+            };
+            for heard in whisper.transcribe(&piece, &request).unwrap() {
+                eprintln!("{:>7}–{:<7} {:.2} {} {}", start, end, heard.confidence.unwrap_or(0.0), heard.language_code, heard.text);
+            }
+            // The same stretch on a cleaner recording (a call's other channel) shows what was really said.
+            if let Some(reference) = &reference {
+                let piece = crate::audio_preprocess::PreparedAudio {
+                    sample_rate_hz: reference.sample_rate_hz,
+                    channels: reference.channels,
+                    samples: reference.samples[(start * rate / 1_000) as usize..((end * rate / 1_000) as usize).min(reference.samples.len())].to_vec(),
+                };
+                let said: Vec<String> = whisper.transcribe(&piece, &request).unwrap().into_iter().map(|s| s.text).collect();
+                eprintln!("{:>7}–{:<7} REF {}", start, end, said.join(" "));
+            }
+        }
+    }
+
+    /// Tidies a finished VibeVoice transcript of a call's microphone channel
+    /// and merges it with the other channel (transcribed by Whisper), as a call
+    /// is: `MURMELA_GAP_AUDIO=mic.wav MURMELA_REFERENCE_AUDIO=call-audio.wav
+    /// MURMELA_UNCLEAR_TRANSCRIPT=…json cargo test --release --lib tidied_call -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn tidied_call_on_a_real_recording() {
+        let audio = crate::audio_preprocess::decode_audio_file(Path::new(&std::env::var("MURMELA_GAP_AUDIO").unwrap())).unwrap();
+        let other = std::env::var("MURMELA_REFERENCE_AUDIO").unwrap();
+        let transcript: TranscriptResult = serde_json::from_slice(
+            &std::fs::read(std::env::var("MURMELA_UNCLEAR_TRANSCRIPT").unwrap()).unwrap(),
+        )
+        .unwrap();
+        let models_dir = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join("Library/Application Support/com.murmela.app/models");
+        let duration_ms = audio.samples.len() as i64 * 1_000 / audio.sample_rate_hz as i64;
+        let mut output = NativeWorkerResult {
+            text: String::new(),
+            segments: transcript
+                .segments
+                .iter()
+                .map(|segment| NativeOutputSegment {
+                    start_ms: segment.start_ms,
+                    end_ms: segment.end_ms,
+                    text: segment.text.clone(),
+                    speaker: segment.speaker_id.clone(),
+                    language_code: None,
+                })
+                .collect(),
+            truncated: false,
+            warning: None,
+            gaps: Vec::new(),
+        };
+        let before = output.segments.len();
+        tidy_sounds(&mut output, &audio, &models_dir, &EngineLog(None));
+        let local = normalize_native_result("vibevoice", "VibeVoice", duration_ms, output);
+        let marks = |result: &TranscriptResult| result.segments.iter().filter(|s| native_sounds::is_unclear_mark(&s.text)).count();
+        eprintln!(
+            "microphone: {before} segments → {} ({} unclear marks); quality {:?}, speakers {:?}; warnings {:?}",
+            local.segments.len(),
+            marks(&local),
+            local.quality_status,
+            local.diarization_status,
+            local.warnings.iter().map(|w| &w.reason).collect::<Vec<_>>()
+        );
+        let request = crate::asr::FileTranscriptionRequest {
+            use_context: Some(crate::model_metadata::ModelUseContext::FileTranscription),
+            profile: crate::settings::ModelProfile::Accurate,
+            selected_model_id: None,
+            language_mode: crate::settings::LanguageMode::Auto,
+            fixed_language: None,
+            timestamps: true,
+            prefer_gpu: true,
+            file_path: other.clone(),
+            context_prompt: None,
+            context_terms: Vec::new(),
+        };
+        let other_audio = crate::audio_preprocess::decode_audio_file(Path::new(&other)).unwrap();
+        let mut remote = transcript.clone();
+        remote.segments = crate::asr::WhisperFallback::load(&models_dir, true).unwrap().transcribe(&other_audio, &request).unwrap();
+        remote.warnings = Vec::new();
+        let merged = crate::meeting::speakers::assemble(crate::meeting::speakers::AssembleInput {
+            job_id: "call".into(),
+            model_name: "VibeVoice".into(),
+            local: Some(local),
+            remote: Some(remote),
+            remote_turns: None,
+            spans: Vec::new(),
+            local_name: None,
+            separate_remote_speakers: false,
+        });
+        eprintln!(
+            "call: {} segments, {} unclear marks; quality {:?}; warnings {:?}",
+            merged.segments.len(),
+            marks(&merged),
+            merged.quality_status,
+            merged.warnings.iter().map(|w| &w.reason).collect::<Vec<_>>()
+        );
+        for segment in merged.segments.iter().filter(|s| native_sounds::is_unclear_mark(&s.text)) {
+            eprintln!("  left: {}", segment.text);
+        }
     }
 
     #[test]
@@ -761,6 +1322,91 @@ mod tests {
     }
 
     #[test]
+    fn sound_tags_are_dropped_and_unclear_speech_marked_once() {
+        let segment = |start_ms, end_ms, speaker: Option<&str>, text: &str| NativeOutputSegment {
+            start_ms,
+            end_ms,
+            text: text.into(),
+            speaker: speaker.map(str::to_string),
+            language_code: None,
+        };
+        let mut output = NativeWorkerResult {
+            text: String::new(),
+            segments: vec![
+                segment(0, 5_000, Some("0"), "Hola, ¿cómo estás?"),
+                segment(5_000, 9_000, None, "[Environmental Sounds]"),
+                // Two tags with nothing said between are one stretch.
+                segment(9_000, 14_000, None, "[Unintelligible Speech]"),
+                segment(14_500, 18_000, None, "[Unintelligible Speech]"),
+                segment(18_000, 21_000, Some("1"), "Bien. [Laughter] ¿Y vos?"),
+                // Too short to mark.
+                segment(21_000, 21_800, None, "[Unintelligible Speech]"),
+                segment(22_000, 23_000, None, "[Music]"),
+            ],
+            truncated: false,
+            warning: None,
+            gaps: Vec::new(),
+        };
+        let audio = audio_preprocess::PreparedAudio { sample_rate_hz: 16_000, channels: 1, samples: vec![0.0; 16_000 * 25] };
+        let models_dir = std::env::temp_dir().join("murmela-no-models");
+        tidy_sounds(&mut output, &audio, &models_dir, &EngineLog(None));
+        let texts: Vec<_> = output.segments.iter().map(|segment| segment.text.as_str()).collect();
+        assert_eq!(texts, vec!["Hola, ¿cómo estás?", "[Unclear audio 00:09–00:18]", "Bien. [Laughter] ¿Y vos?"]);
+
+        // Nine unclear seconds are marked in the text, not flagged.
+        let result = normalize_native_result("native", "VibeVoice", 25_000, output);
+        assert_eq!(result.diarization_status, DiarizationStatus::Completed);
+        assert_eq!(result.quality_status, TranscriptQualityStatus::Clean);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn gaps_become_warnings_without_breaking_speakers() {
+        let segment = |start_ms, end_ms, speaker: Option<&str>, text: &str| NativeOutputSegment {
+            start_ms,
+            end_ms,
+            text: text.into(),
+            speaker: speaker.map(str::to_string),
+            language_code: Some("es".into()),
+        };
+        let gap = |start_ms, end_ms, filled_by: Option<&str>| NativeGap {
+            start_ms,
+            end_ms,
+            reason: "repeated a word".into(),
+            filled_by: filled_by.map(str::to_string),
+        };
+        let output = |gaps| NativeWorkerResult {
+            text: String::new(),
+            segments: vec![
+                segment(0, 10_000, Some("0"), "Hola."),
+                segment(10_000, 20_000, None, "Filled by Whisper."),
+                segment(20_000, 30_000, Some("1"), "Chau."),
+            ],
+            truncated: false,
+            warning: None,
+            gaps,
+        };
+
+        let filled = normalize_native_result("native", "VibeVoice", 30_000, output(vec![gap(10_000, 20_000, Some("Whisper"))]));
+        assert_eq!(filled.quality_status, TranscriptQualityStatus::Recovered);
+        assert_eq!(filled.recovered_region_count, 1);
+        assert_eq!(filled.diarization_status, DiarizationStatus::Completed);
+        assert_eq!(filled.warnings[0].outcome, "recovered");
+        assert_eq!(
+            filled.warnings[0].reason,
+            "VibeVoice got stuck at 00:10–00:20 (repeated a word); Whisper transcribed this part."
+        );
+
+        let skipped = normalize_native_result("native", "VibeVoice", 30_000, output(vec![gap(10_000, 20_000, None)]));
+        assert_eq!(skipped.quality_status, TranscriptQualityStatus::Partial);
+        assert_eq!(skipped.warnings[0].outcome, "skipped");
+
+        // Without a gap, text without a speaker still means incomplete speakers.
+        let plain = normalize_native_result("native", "VibeVoice", 30_000, output(Vec::new()));
+        assert_eq!(plain.diarization_status, DiarizationStatus::Failed);
+    }
+
+    #[test]
     fn normalizes_speakers_by_first_appearance_and_clamps_timestamps() {
         let result = normalize_native_result(
             "native",
@@ -793,6 +1439,7 @@ mod tests {
                 ],
                 truncated: false,
                 warning: None,
+                gaps: Vec::new(),
             },
         );
         assert_eq!(result.segments[0].speaker_id.as_deref(), Some("speaker_0"));
@@ -815,6 +1462,7 @@ mod tests {
                 segments: vec![],
                 truncated: true,
                 warning: None,
+                gaps: Vec::new(),
             },
         );
         assert_eq!(result.plain_text, "Recoverable text");

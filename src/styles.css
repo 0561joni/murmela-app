@@ -4839,3 +4839,33 @@ html.overlay-window body {
   background: var(--color-primary);
   transition: width 120ms linear;
 }
+
+/* ---------- Settings → Translate selected text ---------- */
+.quick-translate-settings .segmented-control {
+  justify-self: start;
+}
+.quick-translate-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+.quick-translate-apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.quick-translate-apps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-hover);
+  font: var(--text-body);
+}
+.quick-translate-apps li.is-missing span {
+  color: var(--color-text-muted);
+}

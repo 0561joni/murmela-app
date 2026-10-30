@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS settings (
   translation_enabled INTEGER NOT NULL DEFAULT 0,
   translation_cycle_shortcut TEXT NOT NULL DEFAULT 'Ctrl+Alt+L',
   -- Comma-separated; matches translation::DEFAULT_CYCLE_LANGUAGES. Added after 1.1 (see storage::ensure_schema).
+  -- The quick_translate_* columns (⌘C twice) were added after 1.2.4 the same way.
   translation_cycle_languages TEXT NOT NULL DEFAULT 'en,de,fr,es-AR',
   paste_last_shortcut TEXT NOT NULL DEFAULT 'Ctrl+Alt+V',
   translation_model_id TEXT NOT NULL DEFAULT 'translategemma-12b-q6-k',
@@ -34,7 +35,14 @@ CREATE TABLE IF NOT EXISTS settings (
   live_pair_chunk_ms INTEGER NOT NULL DEFAULT 560,
   live_pair_keep_loaded INTEGER NOT NULL DEFAULT 1,
   serious_mode INTEGER NOT NULL DEFAULT 0,
-  auto_update_enabled INTEGER NOT NULL DEFAULT 1
+  auto_update_enabled INTEGER NOT NULL DEFAULT 1,
+  quick_translate_enabled INTEGER NOT NULL DEFAULT 1,
+  quick_translate_shortcut TEXT NOT NULL DEFAULT 'DoubleCopy',
+  quick_translate_display TEXT NOT NULL DEFAULT 'popup',
+  quick_translate_ignored_apps TEXT NOT NULL DEFAULT 'com.apple.keychainaccess,com.apple.Passwords,com.1password.1password,com.agilebits.onepassword7',
+  quick_translate_my_language TEXT NULL,
+  quick_translate_last_target TEXT NULL,
+  quick_translate_save_history INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS transcripts (

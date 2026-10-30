@@ -64,6 +64,17 @@ pub enum MotionPreference {
     Reduced,
 }
 
+/// Where a quick translation (⌘C twice) appears.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuickTranslateDisplay {
+    /// A small panel next to the pointer, over the app being used.
+    #[default]
+    Popup,
+    /// The Translate screen in Murmela's window.
+    App,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -111,6 +122,28 @@ pub struct AppSettings {
     /// Look for a new Murmela release in the background and offer to install it.
     #[serde(default = "default_true")]
     pub auto_update_enabled: bool,
+    /// Translate selected text in any app with ⌘C twice or `quick_translate_shortcut`.
+    #[serde(default = "default_true")]
+    pub quick_translate_enabled: bool,
+    /// `quick_translate::DOUBLE_COPY`, or a key combination that copies the selection itself.
+    #[serde(default = "default_quick_translate_shortcut")]
+    pub quick_translate_shortcut: String,
+    #[serde(default)]
+    pub quick_translate_display: QuickTranslateDisplay,
+    /// Bundle identifiers of apps where quick translation does nothing.
+    #[serde(default = "default_quick_translate_ignored_apps")]
+    pub quick_translate_ignored_apps: Vec<String>,
+    /// Text in other languages is translated into this one; None follows macOS.
+    #[serde(default)]
+    pub quick_translate_my_language: Option<String>,
+    /// The last other language picked in the popup. Text already in your own
+    /// language is translated into it.
+    #[serde(default)]
+    pub quick_translate_last_target: Option<String>,
+    /// Keep translations made in the panel in the Library (off: quick lookups
+    /// would crowd it).
+    #[serde(default)]
+    pub quick_translate_save_history: bool,
 }
 
 /// Control-Option-V: paste the last dictation again.
@@ -122,6 +155,12 @@ fn default_paste_last_shortcut() -> String {
 pub const LIVE_PAIR_CHUNKS_MS: [u32; 2] = [560, 1120];
 fn default_live_pair_chunk_ms() -> u32 {
     LIVE_PAIR_CHUNKS_MS[0]
+}
+fn default_quick_translate_shortcut() -> String {
+    crate::quick_translate::DOUBLE_COPY.into()
+}
+fn default_quick_translate_ignored_apps() -> Vec<String> {
+    crate::quick_translate::DEFAULT_IGNORED_APPS.map(String::from).to_vec()
 }
 fn default_true() -> bool {
     true
@@ -163,4 +202,11 @@ pub struct SettingsPatch {
     pub paste_last_shortcut: Option<String>,
     pub serious_mode: Option<bool>,
     pub auto_update_enabled: Option<bool>,
+    pub quick_translate_enabled: Option<bool>,
+    pub quick_translate_shortcut: Option<String>,
+    pub quick_translate_display: Option<QuickTranslateDisplay>,
+    pub quick_translate_ignored_apps: Option<Vec<String>>,
+    pub quick_translate_my_language: Option<Option<String>>,
+    pub quick_translate_last_target: Option<Option<String>>,
+    pub quick_translate_save_history: Option<bool>,
 }

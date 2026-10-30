@@ -69,6 +69,13 @@ const mockSettings: AppSettings = {
   pasteLastShortcut: "Ctrl+Alt+V",
   seriousMode: false,
   autoUpdateEnabled: true,
+  quickTranslateEnabled: true,
+  quickTranslateShortcut: "DoubleCopy",
+  quickTranslateDisplay: "popup",
+  quickTranslateIgnoredApps: ["com.apple.keychainaccess", "com.apple.Passwords", "com.1password.1password", "com.agilebits.onepassword7"],
+  quickTranslateMyLanguage: null,
+  quickTranslateLastTarget: null,
+  quickTranslateSaveHistory: false,
 };
 
 // Browser preview: add ?first-run to the URL to simulate a fresh install.

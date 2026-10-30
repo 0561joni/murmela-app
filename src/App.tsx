@@ -65,6 +65,7 @@ import { SettingsScreen } from "./screens/SettingsScreen";
 import { HistoryScreen } from "./screens/HistoryScreen";
 import { VocabularyScreen } from "./screens/VocabularyScreen";
 import { TranslateScreen, type TranslateOpenRequest } from "./screens/TranslateScreen";
+import type { QuickTranslateOpen } from "./lib/quickTranslateApi";
 import { AccessibilityExplainer } from "./components/AccessibilityExplainer";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { ProBanner } from "./components/ProBanner";
@@ -594,6 +595,26 @@ export function App() {
             if (currentScreenRef.current === "translate") {
               setIsTranslateDragActive(true);
             }
+          }),
+        );
+
+        // The ⌘C-twice panel saved a translation in the Library.
+        unlisteners.push(
+          await listen("text-translations-changed", () => setTranslationsVersion((value) => value + 1)),
+        );
+
+        // The panel turned ⌘C twice off.
+        unlisteners.push(
+          await listen("settings-changed", () => {
+            void getSettings().then(setSettings).catch(() => undefined);
+          }),
+        );
+
+        unlisteners.push(
+          await listen<QuickTranslateOpen>("quick-translate-open", (event) => {
+            const { text, sourceLanguage, targetLanguage } = event.payload;
+            setTranslateOpenRequest({ kind: "text", text, source: sourceLanguage, target: targetLanguage, nonce: Date.now() });
+            setScreen("translate");
           }),
         );
 
@@ -1653,6 +1674,7 @@ export function App() {
                     transcripts={settings?.saveHistory ? transcripts : []}
                     openRequest={translateOpenRequest}
                     dragging={isTranslateDragActive}
+                    active={screen === "translate"}
                     onOpenSettings={() => {
                       setSettingsSection("languages");
                       setScreen("settings");

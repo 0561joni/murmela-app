@@ -14,7 +14,15 @@ const mocks = vi.hoisted(() => ({
   dictationUpdate: null as null | ((update: AppDictationUpdate) => void),
   startAppDictation: vi.fn(),
   finishAppDictation: vi.fn(),
+  recentCopy: vi.fn(async (): Promise<string | null> => null),
+  insertTarget: vi.fn(async (): Promise<string | null> => null),
+  insert: vi.fn(async (): Promise<"replacing" | "needs_accessibility"> => "replacing"),
 }));
+
+vi.mock("../lib/quickTranslateApi", async () => {
+  const actual = await vi.importActual<typeof import("../lib/quickTranslateApi")>("../lib/quickTranslateApi");
+  return { ...actual, recentCopy: mocks.recentCopy, insertTargetName: mocks.insertTarget, insertIntoLastApp: mocks.insert };
+});
 
 vi.mock("../lib/textTranslation", async () => {
   const actual = await vi.importActual<typeof import("../lib/textTranslation")>("../lib/textTranslation");
@@ -232,5 +240,64 @@ describe("TranslateScreen", () => {
     mocks.status = { ...readyStatus, supported: false };
     renderScreen();
     await screen.findByText("Not available on this computer yet");
+  });
+
+  describe("coming back from another app", () => {
+    function renderActive() {
+      return render(
+        <TranslateScreen
+          settings={{ saveHistory: true } as AppSettings}
+          transcripts={[]}
+          openRequest={null}
+          dragging={false}
+          active
+          onOpenSettings={() => {}}
+          onLibraryChanged={() => {}}
+        />,
+      );
+    }
+
+    beforeEach(() => {
+      mocks.recentCopy.mockReset().mockResolvedValue(null);
+      mocks.insertTarget.mockReset().mockResolvedValue(null);
+      mocks.insert.mockReset().mockResolvedValue("replacing");
+    });
+
+    it("fills an empty screen with what was just copied, and Clear empties it", async () => {
+      mocks.recentCopy.mockResolvedValue("Hallo und danke.");
+      renderActive();
+      const box = screen.getByLabelText("Text to translate") as HTMLTextAreaElement;
+      await waitFor(() => expect(box.value).toBe("Hallo und danke."));
+      expect(mocks.recentCopy).toHaveBeenCalledWith(60);
+      expect(screen.getByText(/From clipboard/)).toBeTruthy();
+      await screen.findByText("EN:Hallo und danke.");
+      fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+      expect(box.value).toBe("");
+      expect(screen.queryByText(/From clipboard/)).toBeNull();
+    });
+
+    it("never replaces text that is already there", async () => {
+      mocks.recentCopy.mockResolvedValue("Something copied");
+      renderActive();
+      type("Mein eigener Text.");
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect((screen.getByLabelText("Text to translate") as HTMLTextAreaElement).value).toBe("Mein eigener Text.");
+    });
+
+    it("inserts the translation into the app used before Murmela", async () => {
+      mocks.insertTarget.mockResolvedValue("Mail");
+      renderActive();
+      await screen.findByText(/TranslateGemma 12B · ready/);
+      type("Hallo und danke.");
+      await screen.findByText("EN:Hallo und danke.");
+      fireEvent.click(await screen.findByRole("button", { name: "Insert into Mail" }));
+      await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith("EN:Hallo und danke."));
+
+      mocks.insert.mockResolvedValueOnce("needs_accessibility");
+      fireEvent.keyDown(screen.getByLabelText("Text to translate"), { key: "Enter", metaKey: true, shiftKey: true });
+      expect(await screen.findByText("Why Murmela asks for Accessibility")).toBeTruthy();
+    });
   });
 });
